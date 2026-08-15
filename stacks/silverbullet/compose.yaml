@@ -15,9 +15,16 @@ services:
       # own healthcheck curls "http://localhost:$SB_PORT/.instance", so an
       # unset SB_PORT silently turns the health status into a lie.
       SB_PORT: 3000
-      SB_HOSTNAME: 0.0.0.0
+      # SB_HOSTNAME is deliberately absent: the image already sets it to 0.0.0.0
+      # in its own ENV, so repeating it here only invites someone to "fix" it to
+      # 127.0.0.1 and break the port mapping.
       SB_FOLDER: /space
       SB_USER: ${SB_USER:?set SB_USER in .env as user:password}
+      # Bearer token for the HTTP API. Required rather than defaulted to empty,
+      # for the same reason SB_USER is: an empty credential is ambiguous -- it
+      # might disable token auth or it might accept an empty token, and guessing
+      # wrong on a value that gates API access is not worth the convenience.
+      SB_AUTH_TOKEN: ${SB_AUTH_TOKEN:?set SB_AUTH_TOKEN in .env}
     ports:
       # Published on 8002 to leave 3000 free; the container still listens on
       # 3000 internally, which is what SB_PORT above has to agree with.

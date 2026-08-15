@@ -50,14 +50,47 @@ netinstall is fine.
 $EDITOR inventory/hosts.yml          # real hostname and IP
 $EDITOR inventory/group_vars/all.yml # confirm ansible_user
 
+ssh <user>@<host> true               # accept the host key -- see below
+
 make ping        # SSH + sudo both work?
-make check       # dry run: shows exactly what would change
 make bootstrap   # apply
 ```
 
-`make check` on an unbootstrapped host reports the apt tasks as changes it would
-make; that is the expected output, not a problem. It also skips the version
-assertions, because in check mode nothing was installed to assert against.
+**The admin account needs NOPASSWD sudo.** `become_ask_pass` is `False`, so
+nothing prompts. On the host:
+
+```sh
+printf '<user> ALL=(ALL) NOPASSWD: ALL\n' > /tmp/nopasswd
+sudo visudo -cf /tmp/nopasswd                                        # "parsed OK"
+sudo install -o root -g root -m 0440 /tmp/nopasswd /etc/sudoers.d/99-<user>
+rm /tmp/nopasswd && sudo -n true && echo "NOPASSWD works"
+```
+
+Validate before installing: a syntax error under `/etc/sudoers.d/` breaks all
+sudo the moment the file lands. The file must be `0440 root:root`, and its name
+must contain no dots — sudo silently ignores it otherwise.
+
+This is not only convenience. With `become_ask_pass = True`, Ansible passes sudo
+a randomised marker via `-p` and waits for it before sending the password.
+sudo-rs — the Rust sudo Ubuntu ships by default from 25.10 — ignores `-p`, so
+the marker never arrives and every task fails with `Timeout waiting for
+privilege escalation prompt` even though SSH and sudo are both healthy. NOPASSWD
+removes that handshake entirely.
+
+**The first connection has to be made by hand.** `host_key_checking = True`, so
+Ansible refuses a host whose key it has never seen; one manual `ssh` records it.
+
+Extra flags reach any target through `ARGS`, e.g. `make bootstrap ARGS=-vv`,
+`ARGS="--tags docker"`, `ARGS="--limit homelab01"`.
+
+`make check` is worth it on a host that has already been bootstrapped, where a
+clean re-run should report `changed=0`. On a bare one it cannot tell you much:
+check mode changes nothing, so later tasks inspect state that earlier tasks
+would have created, and the docker service task has no `docker.service` to look
+at. Expect noise there. The version assertions skip themselves in check mode for
+the same reason — nothing was installed to assert against.
+
+On a VM, a snapshot beats a dry run anyway.
 
 ## What the bootstrap does
 
