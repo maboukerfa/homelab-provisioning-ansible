@@ -38,6 +38,8 @@ stack_data_mode: "0750"
 # present | absent | stopped | restarted
 stack_state: present
 
-# `missing`, not `always`: these images are tagged :latest, and pulling on every
-# run would turn any unrelated playbook run into an unplanned upgrade.
+# `missing`, not `always`. Against a pinned tag the two fetch the same image
+# anyway, so this just saves a registry round-trip on every run. Against a
+# floating tag it is also what stops an unrelated playbook run from turning into
+# an unplanned upgrade -- pin the tag in the compose file and neither matters.
 stack_pull: missing
