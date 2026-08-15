@@ -1,28 +1,31 @@
 # homelab-ansible
 
-Ansible for the homelab. Right now it does one job: take a Debian or Ubuntu box
-and guarantee it has Docker Engine, the Compose v2 plugin, and an unprivileged
-`appuser` identity for containers to run as.
+Ansible for the homelab. Two jobs so far: bootstrap a Debian or Ubuntu box with
+Docker Engine, the Compose v2 plugin and an unprivileged `appuser` identity, and
+deploy compose stacks from `stacks/` onto it.
 
-It is written to be safe to run against the box **as it is today**, with Immich,
-Paperless and SilverBullet already serving traffic. See
-[Running against a live host](#running-against-a-live-host) before the first run.
+Written for a **fresh host**. Everything is idempotent, so re-running it is
+cheap and boring, but two defaults assume nothing is serving traffic yet — see
+[Defaults that assume a fresh host](#defaults-that-assume-a-fresh-host).
 
 ## Layout
 
 ```
 ansible.cfg              inventory path, ssh tuning, yaml output
 requirements.yml         galaxy collections (installed into ./collections, gitignored)
-Makefile                 make ping / check / bootstrap / lint
+Makefile                 make ping / check / bootstrap / stack / lint
 inventory/
   hosts.yml              the machines
   group_vars/all.yml     ansible_user, filesystem convention
 playbooks/
   bootstrap.yml          python3 -> docker -> appuser
+  silverbullet.yml       deploy one stack
 roles/
   docker/                install from Docker's apt repo, then verify it works
   appuser/               the service identity, uid/gid pinned
+  stack/                 deploy one compose stack, with preflight checks
 stacks/                  compose files, one directory per app -- see stacks/README.md
+  silverbullet/
 ```
 
 ## Requirements
@@ -52,83 +55,57 @@ make check       # dry run: shows exactly what would change
 make bootstrap   # apply
 ```
 
-`make check` on an unbootstrapped host will report the apt tasks as changes it
-would make; that is the expected output, not a problem.
+`make check` on an unbootstrapped host reports the apt tasks as changes it would
+make; that is the expected output, not a problem. It also skips the version
+assertions, because in check mode nothing was installed to assert against.
 
-## What the bootstrap actually does
+## What the bootstrap does
 
 | | |
 |---|---|
 | Installs | `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin` from `download.docker.com` |
 | Adds | `/etc/apt/keyrings/docker.asc` and `/etc/apt/sources.list.d/docker.list` |
+| Removes | the distro's `docker.io` / `docker-compose` / `containerd` packages, per Docker's install guide |
+| Writes | `/etc/docker/daemon.json` — log rotation and `live-restore` |
 | Creates | group `appuser` (gid 2000), user `appuser` (uid 2000), shell `/usr/sbin/nologin`, locked password, member of `docker` |
 | Enables | `docker.service`, started and enabled at boot |
 | Verifies | `docker --version` and `docker compose version` both respond and clear the configured minimums |
 
-It does **not** touch `/opt`, `/srv`, any existing user, or any running
-container.
+That last row is the one that earns its place. `state: present` succeeding is not
+the same as Docker working: a compose plugin that never landed, or a `docker.io`
+still shadowing `$PATH`, both produce a green playbook run and a broken host.
 
-## Running against a live host
+## Defaults that assume a fresh host
 
-Three things are worth knowing before you point this at the box that is
-currently serving your photos.
+Both live in `roles/docker/defaults/main.yml` and both are safe now and
+disruptive later. Flip them in `inventory/group_vars/homelab.yml` before
+pointing this at a machine that is already serving traffic.
 
-**Docker is already installed there, so the apt tasks are no-ops.** The value of
-the first run is the verification and the appuser, not the install.
+**`docker_manage_daemon_config: true`** writes `/etc/docker/daemon.json` and
+restarts dockerd. Free on an empty host; seconds of downtime on a busy one.
+Doing it now is deliberate — `live-restore` only protects container uptime once
+it is *already* active, so the restart that enables it is the one outage it
+cannot cover. Enable it before there is anything to protect.
 
-**Daemon config is opt-in and starts off.** `docker_manage_daemon_config`
-defaults to `false`. When you turn it on it writes `/etc/docker/daemon.json`
-with log rotation and `live-restore`, and that requires restarting dockerd.
-`live-restore` only protects container uptime once it is *already* active, so
-the restart that enables it is the one outage it cannot prevent — a few seconds
-where containers stop and come back. Do it in a window you choose:
+The config it writes matters: `json-file` logging with no `max-size` is the
+standard way a homelab fills its disk overnight and takes every service down
+with it. Note that log options apply to containers created *after* the change.
 
-```yaml
-# inventory/group_vars/homelab.yml
-docker_manage_daemon_config: true
-```
+**`docker_remove_conflicting_packages: true`** purges `docker.io` and friends,
+which is how Docker's own install guide opens. A no-op on a fresh host, and it
+stops the distro packages being pulled in later as somebody else's dependency.
+On a host already running containers from `docker.io`, it stops all of them.
 
-Worth doing soon, though. `json-file` with no `max-size` is the standard way a
-homelab fills its disk overnight and takes every service down with it. Note that
-log options apply to containers created *after* the change; existing ones keep
-their current settings until recreated.
+## appuser
 
-**Conflicting-package removal is off.** `docker_remove_conflicting_packages`
-defaults to `false`. Docker's install guide opens by purging `docker.io` and
-friends — correct on a fresh machine, and on this one it would stop every
-running container. Only flip it for a genuinely new host.
+A service identity, not a person: uid/gid pinned to **2000:2000**, shell
+`/usr/sbin/nologin`, password locked, no `~/.ssh` and no way to add one through
+this role.
 
-## appuser and the uid-1000 question
-
-Your running stacks are owned by uid 1000 (`maboukerfa`) — SilverBullet pins
-`user: "1000:1000"` in its compose file. `appuser` is pinned to **2000:2000**
-specifically to stay out of their way. Nothing in the `appuser` role chowns
-anything, so Immich, Paperless and SilverBullet keep working untouched.
-
-That leaves two owners on the box for now, which is fine. New stacks use
-`2000:2000`; existing ones move when you decide they should, one at a time:
-
-```sh
-docker compose -f /opt/<app>/compose.yaml down
-chown -R 2000:2000 /srv/<app>
-# change `user:` / PUID / PGID in the compose file to 2000:2000
-docker compose -f /opt/<app>/compose.yaml up -d
-```
-
-The uid is pinned rather than auto-allocated because bind mounts carry numeric
-ids, not names. If the host is rebuilt and `useradd` hands out 1001 next time,
-every file under `/srv` is owned by a stranger and containers start failing in
-ways that look like application bugs.
-
-### appuser cannot log in
-
-`appuser` is a pure ownership identity: shell `/usr/sbin/nologin`, password
-locked, no `~/.ssh` and no way to add one through this role. Nothing needs a
-login — containers run as `2000:2000`, which is a uid the kernel checks and
-which requires no host shell whatsoever, and systemd runs `ExecStart` directly
-without one either.
-
-The one thing to remember, because it will catch you out once:
+Nothing needs a login. Containers run as `2000:2000`, which is a uid the kernel
+checks and which requires no host shell whatsoever, and systemd runs `ExecStart`
+directly without one either. The one thing to remember, because it will catch
+you out once:
 
 ```sh
 sudo -u appuser docker compose ps    # works: sudo execs the command
@@ -136,33 +113,59 @@ sudo -u appuser -i                   # fails: -i asks for a login shell
 su - appuser                         # fails: same reason
 ```
 
-A home directory still exists at `/home/appuser` (mode 0750). That is not an
-oversight — anything running as appuser resolves `$HOME`, and the docker CLI
-writes `~/.docker/config.json` while restic caches under `~/.cache`.
+A home directory still exists at `/home/appuser` (mode 0750). Not an oversight —
+anything running as appuser resolves `$HOME`, and the docker CLI writes
+`~/.docker/config.json`.
+
+**The uid is pinned, not auto-allocated,** because bind mounts carry numeric ids,
+not names. If the host is rebuilt and `useradd` hands out 2001 next time, every
+file under `/srv` is owned by a stranger and containers start failing in ways
+that look like application bugs. 2000 also clears the 1000–1999 range that
+`useradd` gives human logins, so a person added later cannot collide with it.
 
 **On the `docker` group:** `appuser` is in it, which is root-equivalent — that
 group lets you start a container bind-mounting `/` and step out as root. With
 nologin, the only thing that can still use it is a systemd unit declaring
 `User=appuser` that shells out to `docker compose`. If Ansible does all your
 deploying it does so as root, in which case nothing needs the group and
-`appuser_in_docker_group: false` removes the root-equivalence outright. Your
-existing `paperless-backup.service` already runs as `User=root` for exactly
-this reason, so `false` may well be the honest setting here.
+`appuser_in_docker_group: false` removes the root-equivalence outright.
+
+## Deploying a stack
+
+```sh
+make stack NAME=silverbullet     # or: ansible-playbook playbooks/silverbullet.yml
+```
+
+The `stack` role copies `stacks/<name>/compose.yaml` to `/opt/<name>/` (root
+owned) and brings it up with `community.docker.docker_compose_v2`. Two things
+happen first, both aimed at the same failure — a container that reports healthy
+and is not:
+
+- **Data directories are created and chowned to appuser.** Getting there before
+  Docker does is the point: Docker creates a missing bind-mount source itself,
+  as `root:root`, and with a pinned `user:` the container then starts, passes its
+  healthcheck, and cannot write a byte.
+- **The `.env` is checked to exist.** Secrets stay on the host and never enter
+  this repo. The role never reads or rewrites the file — clobbering a working
+  credential during a routine deploy is not a failure mode worth having. Commit
+  `.env.example` next to the compose file to document the keys.
+
+Adding a stack is a directory under `stacks/` and a playbook that names it plus
+its data directories; `playbooks/silverbullet.yml` is nine lines and is the
+template.
 
 ## Secrets
 
-Nothing here needs a vault yet. When it does — restic passwords, API tokens —
-use `ansible-vault` and keep the password file out of the repo; `.gitignore`
-already excludes `.vault_pass`. Encrypted vault files themselves are safe to
-commit and belong in the repo.
+Per-stack `.env` files live on the host and are gitignored; commit
+`.env.example` next to each compose file instead. That means a rebuild is not
+yet fully reproducible from git — the credentials have to be placed by hand.
 
-Per-stack `.env` files stay on the host and are gitignored; commit
-`.env.example` next to each compose file instead.
+`ansible-vault` closes that gap when you want it: `.gitignore` already excludes
+`.vault_pass`, and encrypted vault files are safe to commit and belong in the
+repo.
 
 ## Next
 
-The obvious next role is `stack`: render `stacks/<name>/compose.yaml` to
-`/opt/<name>/`, create `/srv/<name>/` owned by appuser, and bring it up with
-`community.docker.docker_compose_v2` (already pinned in `requirements.yml`).
-After that, folding in the restic backup scripts and systemd timers that
-currently live beside this directory.
+- Vault the per-stack secrets, so a host rebuild needs nothing typed by hand.
+- Backups. `/srv` is deliberately the only precious half of the filesystem
+  convention, which makes it the whole of what a backup role has to cover.

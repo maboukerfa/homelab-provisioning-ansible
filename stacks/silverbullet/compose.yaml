@@ -1,0 +1,30 @@
+services:
+  silverbullet:
+    image: zefhemel/silverbullet:latest
+    container_name: silverbullet
+    restart: unless-stopped
+    # The image ships no non-root user and does no PUID/PGID juggling in its
+    # entrypoint - it is a single static binary - so the uid is set here.
+    # 2000:2000 is appuser, which also owns /srv/space, so the notes have
+    # exactly one owner end to end.
+    user: "2000:2000"
+    environment:
+      # Set explicitly rather than relying on the image default: the image's
+      # own healthcheck curls "http://localhost:$SB_PORT/.instance", so an
+      # unset SB_PORT silently turns the health status into a lie.
+      SB_PORT: 3000
+      SB_HOSTNAME: 0.0.0.0
+      SB_FOLDER: /space
+      SB_USER: ${SB_USER:?set SB_USER in .env as user:password}
+    ports:
+      # Published on 8002 to leave 3000 free; the container still listens on
+      # 3000 internally, which is what SB_PORT above has to agree with.
+      - '8002:3000'
+    volumes:
+      - /srv/space:/space
+    # Nothing here needs elevated privileges: the space is a plain bind mount
+    # and 3000 is above the privileged range, so it binds fine without them.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

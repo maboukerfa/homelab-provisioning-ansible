@@ -1,0 +1,23 @@
+---
+# Deploys stacks/silverbullet/compose.yaml to /opt/silverbullet and brings it up.
+#
+# Runs as appuser (2000:2000) with its space at /srv/space, which the role
+# creates and chowns before starting anything. Getting there before Docker does
+# is the point: Docker creates a missing bind-mount source as root:root, and
+# with a pinned `user:` SilverBullet would then come up healthy, blank, and
+# unable to save a single note.
+#
+# One manual step, once: /opt/silverbullet/.env has to hold SB_USER, or the run
+# stops at the preflight check. See stacks/silverbullet/README.md.
+
+- name: Deploy SilverBullet
+  hosts: homelab
+  become: true
+
+  roles:
+    - role: stack
+      tags: [silverbullet]
+      vars:
+        stack_name: silverbullet
+        stack_data_dirs:
+          - /srv/space

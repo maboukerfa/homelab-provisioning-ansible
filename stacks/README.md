@@ -25,9 +25,9 @@ stacks/foo/compose.yaml   ->  /opt/foo/compose.yaml    root-owned, appuser-reada
 Two rules make the rest of the homelab simpler:
 
 - **`/opt` is reproducible, `/srv` is precious.** Everything under `/opt` can be
-  recreated from this repo, so it needs no backup. Everything under `/srv` cannot,
-  so restic backs it up. The backup boundary is a directory, not a judgement call
-  you have to make again for every new service.
+  recreated from this repo. Everything under `/srv` cannot. Whatever you point
+  at `/srv` later has the whole backup problem covered, and the boundary is a
+  directory rather than a judgement call you re-make for every new service.
 - **appuser runs containers, it does not own their definitions.** Compose files
   stay root-owned. A container escape that lands as appuser cannot then rewrite
   the compose file that describes what it is allowed to do.

@@ -20,7 +20,11 @@ check: ## Dry-run the bootstrap and show what would change
 bootstrap: ## Apply the bootstrap for real
 	ansible-playbook $(PLAYBOOK) --limit $(LIMIT) --diff
 
+stack: ## Deploy one stack: make stack NAME=silverbullet
+	@test -n "$(NAME)" || { echo "usage: make stack NAME=<stack>"; exit 2; }
+	ansible-playbook playbooks/$(NAME).yml --limit $(LIMIT) --diff
+
 lint: ## Lint playbooks and roles
 	ansible-lint
 
-.PHONY: help deps ping check bootstrap lint
+.PHONY: help deps ping check bootstrap stack lint

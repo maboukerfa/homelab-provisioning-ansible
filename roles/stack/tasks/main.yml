@@ -1,0 +1,77 @@
+---
+- name: Assert the caller named a stack
+  ansible.builtin.assert:
+    that:
+      - stack_name | length > 0
+    fail_msg: "stack_name must be set by the playbook including this role."
+    quiet: true
+
+- name: Ensure the stack directory exists
+  ansible.builtin.file:
+    path: "{{ stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the compose file
+  ansible.builtin.copy:
+    src: "{{ stack_src }}"
+    dest: "{{ stack_dir }}/{{ stack_compose_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: stack_compose_deployed
+
+# ---------------------------------------------------------------------------
+# Preflight. Both of these run before the stack is started, because getting
+# either wrong produces a container that reports healthy and is not.
+# ---------------------------------------------------------------------------
+
+- name: Check the env file is present
+  ansible.builtin.stat:
+    path: "{{ stack_dir }}/{{ stack_env_file }}"
+  register: stack_env_stat
+  when: stack_require_env_file | bool
+
+- name: Assert the env file is present
+  ansible.builtin.assert:
+    that:
+      - stack_env_stat.stat.exists
+    fail_msg: >-
+      {{ stack_dir }}/{{ stack_env_file }} is missing. It holds this stack's
+      secrets and is deliberately not in git, so it has to be placed on the host
+      once. See stacks/{{ stack_name }}/.env.example for the keys it needs.
+    quiet: true
+  when: stack_require_env_file | bool
+
+- name: Create the directories this stack bind-mounts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ stack_data_owner }}"
+    group: "{{ stack_data_group }}"
+    mode: "{{ stack_data_mode }}"
+  loop: "{{ stack_data_dirs }}"
+
+- name: Bring the stack to state {{ stack_state }}
+  community.docker.docker_compose_v2:
+    project_src: "{{ stack_dir }}"
+    # Set explicitly. Compose otherwise derives it from the directory basename,
+    # which silently changes identity if the stack is ever relocated.
+    project_name: "{{ stack_name }}"
+    files:
+      - "{{ stack_compose_file }}"
+    state: "{{ stack_state }}"
+    pull: "{{ stack_pull }}"
+  register: stack_compose_result
+
+- name: Report the containers in the stack
+  ansible.builtin.debug:
+    msg: >-
+      {{ stack_name }}:
+      {{ stack_compose_result.containers
+         | map(attribute='Service') | list | join(', ')
+         if stack_compose_result.containers | default([]) | length > 0
+         else 'no containers reported' }}
+      ({{ 'changed' if stack_compose_result.changed else 'already up to date' }})

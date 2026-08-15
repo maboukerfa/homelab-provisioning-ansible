@@ -1,0 +1,27 @@
+---
+galaxy_info:
+  role_name: stack
+  namespace: homelab
+  author: maboukerfa
+  description: >-
+    Deploy one compose stack from stacks/<name>/ to the host and bring it up,
+    refusing to start it if a bind mount or secret is not where it should be.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - docker
+    - compose
+
+# docker is not listed as a dependency for the same reason it is not one in the
+# appuser role: it would re-run the whole install on every stack deploy. The
+# bootstrap playbook establishes the host; this role assumes it has run.
+dependencies: []

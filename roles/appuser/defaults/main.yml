@@ -8,9 +8,9 @@ appuser_group: appuser
 # every file under /srv is suddenly owned by a stranger and every container that
 # writes to a volume starts failing in ways that look like application bugs.
 #
-# 2000 deliberately clears uid 1000 (maboukerfa), which the running silverbullet
-# and immich stacks are already pinned to. Nothing in this role touches their
-# files; see roles/appuser/tasks/main.yml for what "nothing" means precisely.
+# 2000 also clears the 1000-1999 range that useradd hands out to human logins,
+# so a person created on this box later can never collide with the identity your
+# containers' data is owned by.
 appuser_uid: 2000
 appuser_gid: 2000
 
@@ -27,9 +27,9 @@ appuser_gid: 2000
 appuser_shell: /usr/sbin/nologin
 
 # Kept even though nobody logs in. Anything running as appuser still resolves
-# $HOME: the docker CLI writes ~/.docker/config.json, restic caches under
-# ~/.cache. Without a real home those land somewhere unwritable and surface as
-# permission errors that read like application bugs.
+# $HOME -- the docker CLI writes ~/.docker/config.json, for one. Without a real
+# home those land somewhere unwritable and surface as permission errors that
+# read like application bugs.
 appuser_home: "/home/{{ appuser_name }}"
 appuser_home_mode: "0750"
 

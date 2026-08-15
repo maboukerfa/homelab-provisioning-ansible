@@ -1,0 +1,43 @@
+---
+# Required. Names the directory in stacks/, the directory on the host, and the
+# compose project.
+stack_name: ""
+
+stack_compose_file: compose.yaml
+
+# Source of truth in this repo. Playbooks live in playbooks/, so this resolves
+# to <repo>/stacks/<name>/compose.yaml.
+stack_src: "{{ playbook_dir }}/../stacks/{{ stack_name }}/{{ stack_compose_file }}"
+
+# Deployed copy on the host. Root-owned: appuser runs containers, it does not
+# get to rewrite the file describing what it is allowed to run.
+stack_dir: "{{ homelab_stack_root | default('/opt') }}/{{ stack_name }}"
+
+# Secrets live on the host and never enter this repo. The role checks the file
+# is there and never reads, writes or overwrites it -- clobbering a working
+# credential during a routine deploy is not a failure mode worth having.
+stack_env_file: .env
+stack_require_env_file: true
+
+# Directories this stack bind-mounts, created and chowned before it starts:
+#
+#   stack_data_dirs:
+#     - /srv/space
+#
+# Creating them is the point. Docker creates a missing bind-mount source itself,
+# as root:root -- and combined with a pinned `user:` the container then starts,
+# reports healthy, and cannot write a byte. Getting there first is the fix.
+#
+# Ownership is applied to the directory itself, not recursively: a stack that
+# already holds data keeps whatever the application arranged inside it.
+stack_data_dirs: []
+stack_data_owner: "{{ appuser_uid | default(2000) }}"
+stack_data_group: "{{ appuser_gid | default(2000) }}"
+stack_data_mode: "0750"
+
+# present | absent | stopped | restarted
+stack_state: present
+
+# `missing`, not `always`: these images are tagged :latest, and pulling on every
+# run would turn any unrelated playbook run into an unplanned upgrade.
+stack_pull: missing

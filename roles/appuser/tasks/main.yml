@@ -1,18 +1,14 @@
 ---
 # What this role deliberately does NOT do:
 #
-#   * chown anything under /srv or /opt. The box is already serving Immich,
-#     Paperless and SilverBullet from uid 1000, and SilverBullet in particular
-#     pins `user: "1000:1000"` in its compose file. A well-meaning recursive
-#     chown to appuser would leave those containers unable to write to their own
-#     data -- which presents as a working instance until the first save fails.
-#     Migration, if you ever want it, is per-stack and deliberate.
+#   * create or chown anything under /srv or /opt. A per-stack data directory
+#     is created and chowned by the `stack` role that deploys it, at the moment
+#     there is something to own -- see roles/stack/defaults/main.yml. Doing it
+#     here would mean guessing at paths this role cannot know.
 #
-#   * make /opt or /srv writable by appuser. Compose files stay root-owned and
-#     appuser-readable: appuser runs the containers, it does not get to rewrite
-#     what it runs. Only the per-stack data directory under /srv needs appuser
-#     ownership, and it gets created by the role that deploys that stack, at the
-#     moment there is something to own.
+#   * make /opt or /srv themselves writable by appuser. Compose files stay
+#     root-owned and appuser-readable: appuser runs the containers, it does not
+#     get to rewrite what it runs.
 
 - name: Ensure the appuser group exists
   ansible.builtin.group:
