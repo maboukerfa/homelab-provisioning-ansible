@@ -1,0 +1,66 @@
+---
+# The five packages that make up "docker and docker compose" from Docker's own
+# apt repo. docker-compose-plugin is the v2 `docker compose` subcommand; the v1
+# `docker-compose` Python script is end-of-life upstream and deliberately absent.
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Ubuntu derivatives (Mint, Pop!_OS, Raspberry Pi OS on some releases) report a
+# distribution or codename Docker's repo does not carry. When that happens,
+# override these two with the upstream values the derivative is built from.
+docker_apt_repo_url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+docker_apt_release: "{{ ansible_facts['distribution_release'] }}"
+docker_apt_channel: stable
+docker_apt_keyring_path: /etc/apt/keyrings/docker.asc
+
+docker_service_enabled: true
+docker_service_state: started
+
+# Docker's install guide opens by purging the distro's own docker packages.
+# Off by default and it should stay off on this box: on a host already running
+# containers from docker.io, that removal stops every one of them. Turn it on
+# only for a genuinely fresh machine.
+docker_remove_conflicting_packages: false
+docker_conflicting_packages:
+  - docker.io
+  - docker-doc
+  - docker-compose
+  - docker-compose-v2
+  - podman-docker
+  - containerd
+  - runc
+
+# ---------------------------------------------------------------------------
+# Daemon configuration -- OPT-IN, and the reason is timing, not taste
+# ---------------------------------------------------------------------------
+# The settings below are the ones you want. json-file logging with no max-size
+# is the classic way a homelab dies at 3am: one chatty container fills the disk
+# and takes every other service with it.
+#
+# But applying them restarts dockerd, and the first restart is the expensive
+# one -- live-restore only protects container uptime once it is already active,
+# so enabling it costs exactly the outage it exists to prevent. On a box serving
+# Immich and Paperless that is a maintenance-window decision, not something a
+# bootstrap run should make for you.
+#
+# So: leave this false for the first run, confirm the playbook is clean, then
+# set it true in group_vars and run again when a ~10s blip is fine. Note also
+# that log-opts apply to containers created *after* the change; existing ones
+# keep their current settings until they are recreated.
+docker_manage_daemon_config: false
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: "10m"
+    max-file: "3"
+  # Keeps running containers alive across future dockerd restarts and upgrades.
+  # Incompatible with swarm mode, which this host does not use.
+  live-restore: true
+
+# Asserted after install, so a silent no-op cannot masquerade as success.
+docker_min_version: "24.0.0"
+docker_compose_min_version: "2.20.0"

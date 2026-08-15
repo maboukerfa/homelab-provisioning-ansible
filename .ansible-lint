@@ -1,0 +1,10 @@
+---
+profile: production
+
+exclude_paths:
+  - collections/
+  - .venv/
+
+# Inventory hostnames and group names are matched literally elsewhere in the
+# repo; leave them alone.
+skip_list: []

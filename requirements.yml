@@ -1,0 +1,19 @@
+---
+# Install with `make deps` (ansible-galaxy collection install -r requirements.yml).
+# ansible.cfg points collections_path at ./collections, which is gitignored --
+# this file is the versioned record, the downloaded tarballs are not.
+collections:
+  # profile_tasks, the task-timing callback wired up in ansible.cfg -- it is not
+  # in core, so dropping this collection makes every run warn. Later: mount and
+  # sysctl on the host.
+  - name: ansible.posix
+    version: ">=1.5.4"
+
+  # Not used by the bootstrap itself. It is here because the next role you write
+  # is the one that deploys a stack, and docker_compose_v2 is how that happens.
+  - name: community.docker
+    version: ">=3.10.0"
+
+  # Grab-bag the homelab reaches for eventually: timezone, ufw, systemd bits.
+  - name: community.general
+    version: ">=9.0.0"

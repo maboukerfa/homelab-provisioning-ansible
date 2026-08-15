@@ -1,0 +1,93 @@
+---
+# What this role deliberately does NOT do:
+#
+#   * chown anything under /srv or /opt. The box is already serving Immich,
+#     Paperless and SilverBullet from uid 1000, and SilverBullet in particular
+#     pins `user: "1000:1000"` in its compose file. A well-meaning recursive
+#     chown to appuser would leave those containers unable to write to their own
+#     data -- which presents as a working instance until the first save fails.
+#     Migration, if you ever want it, is per-stack and deliberate.
+#
+#   * make /opt or /srv writable by appuser. Compose files stay root-owned and
+#     appuser-readable: appuser runs the containers, it does not get to rewrite
+#     what it runs. Only the per-stack data directory under /srv needs appuser
+#     ownership, and it gets created by the role that deploys that stack, at the
+#     moment there is something to own.
+
+- name: Ensure the appuser group exists
+  ansible.builtin.group:
+    name: "{{ appuser_group }}"
+    gid: "{{ appuser_gid }}"
+    state: present
+
+# Checked rather than assumed: `user` with a nonexistent group in `groups:`
+# fails with a bare "Group docker does not exist". That is fine when the whole
+# playbook runs in order, and confusing when someone runs `--tags appuser`
+# against a host that has never had the docker role applied.
+- name: Look up the docker group
+  ansible.builtin.getent:
+    database: group
+    key: docker
+    fail_key: false
+  when: appuser_in_docker_group | bool
+
+- name: Assert the docker group exists before granting membership
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_group']['docker'] is not none
+    fail_msg: >-
+      appuser_in_docker_group is true but {{ inventory_hostname }} has no
+      `docker` group -- the docker role has not run here yet. Run the whole
+      bootstrap playbook, or set appuser_in_docker_group to false.
+    quiet: true
+  when: appuser_in_docker_group | bool
+
+# A nonexistent shell path still creates the account perfectly happily; the
+# breakage surfaces much later as a systemd unit that will not start. The
+# classic typo is /sbin/nologin, which is the RHEL path.
+- name: Stat the configured login shell
+  ansible.builtin.stat:
+    path: "{{ appuser_shell }}"
+  register: appuser_shell_stat
+
+- name: Assert the configured login shell exists
+  ansible.builtin.assert:
+    that:
+      - appuser_shell_stat.stat.exists
+    fail_msg: >-
+      appuser_shell is set to {{ appuser_shell }}, which does not exist on
+      {{ inventory_hostname }}. On Debian and Ubuntu the nologin shell lives at
+      /usr/sbin/nologin.
+    quiet: true
+
+- name: Ensure the appuser account exists
+  ansible.builtin.user:
+    name: "{{ appuser_name }}"
+    uid: "{{ appuser_uid }}"
+    group: "{{ appuser_group }}"
+    # append, so re-running never silently drops a group someone added by hand.
+    groups: "{{ appuser_extra_groups + (['docker'] if appuser_in_docker_group | bool else []) }}"
+    append: true
+    shell: "{{ appuser_shell }}"
+    home: "{{ appuser_home }}"
+    create_home: true
+    password_lock: "{{ appuser_password_locked }}"
+    state: present
+
+- name: Set permissions on the appuser home directory
+  ansible.builtin.file:
+    path: "{{ appuser_home }}"
+    state: directory
+    owner: "{{ appuser_name }}"
+    group: "{{ appuser_group }}"
+    mode: "{{ appuser_home_mode }}"
+
+- name: Report the resulting identity
+  ansible.builtin.debug:
+    msg: >-
+      {{ appuser_name }} is uid={{ appuser_uid }} gid={{ appuser_gid }},
+      shell={{ appuser_shell }}{{ ', in the docker group'
+      if appuser_in_docker_group | bool else '' }}.
+      Use `{{ appuser_uid }}:{{ appuser_gid }}` as the `user:` in compose files
+      and as PUID/PGID for linuxserver.io images. There is no shell here: reach
+      it with `sudo -u {{ appuser_name }} <cmd>`, not `sudo -u ... -i`.

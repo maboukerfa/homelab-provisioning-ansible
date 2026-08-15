@@ -1,0 +1,41 @@
+---
+- name: Assert the target runs a supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: >-
+      This role only implements the apt path, but {{ inventory_hostname }}
+      reports os_family={{ ansible_facts['os_family'] }}. Add a
+      tasks/install-{{ ansible_facts['os_family'] | lower }}.yml and branch on
+      os_family below rather than bending the Debian tasks to fit.
+    quiet: true
+
+# Recorded before anything is installed so the run can report "already there"
+# honestly, and so verify.yml knows whether a --check run has anything to check.
+- name: Check whether docker is already installed
+  ansible.builtin.command: docker --version
+  register: docker_preexisting
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Report the pre-existing docker installation
+  ansible.builtin.debug:
+    msg: "docker is already installed: {{ docker_preexisting.stdout }}"
+  when: docker_preexisting.rc | default(1) == 0
+
+- name: Install docker from Docker's apt repository
+  ansible.builtin.include_tasks: install-debian.yml
+
+- name: Configure the docker daemon
+  ansible.builtin.include_tasks: daemon.yml
+  when: docker_manage_daemon_config | bool
+
+- name: Ensure the docker service is running and enabled at boot
+  ansible.builtin.systemd_service:
+    name: docker
+    state: "{{ docker_service_state }}"
+    enabled: "{{ docker_service_enabled }}"
+
+- name: Verify docker and docker compose
+  ansible.builtin.include_tasks: verify.yml

@@ -1,0 +1,25 @@
+---
+# The account Ansible logs in as and escalates from. This is your admin login --
+# NOT the appuser the bootstrap creates. appuser is a service identity with a
+# locked password and no shell access by default; it never runs Ansible.
+ansible_user: maboukerfa
+
+# ---------------------------------------------------------------------------
+# Filesystem convention
+# ---------------------------------------------------------------------------
+# A stack named `foo` occupies exactly two paths on the host:
+#
+#   /opt/foo/compose.yaml   what to run -- root-owned, deployed from this repo
+#   /srv/foo/               what it keeps -- appuser-owned, backed up by restic
+#
+# That split is what already exists on the box (/opt/immich-app holds Immich's
+# compose file, /srv/immich its data), so these are descriptive, not new. The
+# reason it is worth keeping: the backup boundary is then a directory, not a
+# judgement call. /srv is precious and gets a restic tag; /opt is reproducible
+# from git and needs nothing.
+homelab_stack_root: /opt
+homelab_data_root: /srv
+
+# Role knobs live in roles/<name>/defaults/main.yml and are documented there.
+# Override them here (or in group_vars/homelab.yml) rather than editing defaults,
+# so a role stays a drop-in and your choices stay in one greppable place.

@@ -1,0 +1,67 @@
+---
+- name: Remove distro docker packages that conflict with Docker's own
+  ansible.builtin.apt:
+    name: "{{ docker_conflicting_packages }}"
+    state: absent
+    # Not purged: config under /etc/docker is worth keeping around if this
+    # turns out to have been a mistake.
+    purge: false
+  when: docker_remove_conflicting_packages | bool
+
+- name: Install apt prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      # apt_repository is implemented on top of python3-apt; without it the
+      # next task fails with an import error rather than anything useful.
+      - python3-apt
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# `dpkg --print-architecture` rather than the architecture fact: apt wants
+# amd64/arm64/armhf, the fact reports x86_64/aarch64. This is also what makes
+# the role work unchanged on a Raspberry Pi.
+- name: Determine the dpkg architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: docker_dpkg_arch
+  changed_when: false
+  check_mode: false
+
+- name: Ensure /etc/apt/keyrings exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Fetch Docker's apt signing key
+  ansible.builtin.get_url:
+    url: "{{ docker_apt_repo_url }}/gpg"
+    dest: "{{ docker_apt_keyring_path }}"
+    owner: root
+    group: root
+    # World-readable on purpose: apt verifies repository signatures as the
+    # unprivileged _apt user, which cannot read a 0600 keyring.
+    mode: "0644"
+    # Default, stated explicitly because it is load-bearing: re-fetching on
+    # every run would make this task a permanent source of `changed`. If Docker
+    # ever rotates the key, delete the file and re-run.
+    force: false
+
+- name: Add Docker's apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ docker_dpkg_arch.stdout }} signed-by={{ docker_apt_keyring_path }}]
+      {{ docker_apt_repo_url }} {{ docker_apt_release }} {{ docker_apt_channel }}
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Install docker engine and the compose v2 plugin
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present

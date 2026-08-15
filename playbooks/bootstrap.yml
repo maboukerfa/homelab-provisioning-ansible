@@ -1,0 +1,32 @@
+---
+- name: Bootstrap a homelab docker host
+  hosts: homelab
+  become: true
+
+  # Facts are gathered explicitly in pre_tasks instead, because the implicit
+  # gather runs before any task can fix its own prerequisite: a minimal Debian
+  # netinstall ships without python3, and the run would die on fact-gathering
+  # with an error that does not mention python.
+  gather_facts: false
+
+  pre_tasks:
+    - name: Ensure python3 is installed
+      # raw, not apt: there is no interpreter yet for a module to run in.
+      ansible.builtin.raw: >-
+        test -e /usr/bin/python3 ||
+        (apt-get -y update && apt-get install -y --no-install-recommends python3)
+      # raw cannot tell whether it changed anything, and reporting a false
+      # `changed` on every run trains you to ignore the summary line.
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    # Order matters: the docker role creates the `docker` group that the
+    # appuser role adds appuser to.
+    - role: docker
+      tags: [docker]
+
+    - role: appuser
+      tags: [appuser]

@@ -1,0 +1,29 @@
+# Galaxy collections -- requirements.yml is the versioned record, the
+# downloaded tarballs are not.
+collections/
+
+# Ansible run artefacts
+*.retry
+facts_cache/
+
+# Vault. The password file must never be committed; the encrypted vaults it
+# opens are fine to commit and belong in the repo.
+.vault_pass
+.vault-password
+vault_pass*
+
+# Real secrets sitting next to a compose file. The .env.example alongside each
+# one is committed and documents the required keys.
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Control-node virtualenv
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

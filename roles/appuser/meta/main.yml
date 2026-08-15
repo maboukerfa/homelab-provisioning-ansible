@@ -1,0 +1,28 @@
+---
+galaxy_info:
+  role_name: appuser
+  namespace: homelab
+  author: maboukerfa
+  description: >-
+    Create the unprivileged service identity that containerised apps run as,
+    with a pinned uid/gid so bind mounts survive a host rebuild.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - users
+    - docker
+
+# Not expressed as a role dependency on purpose: a `dependencies:` entry would
+# re-run the whole docker role every time this one is used, including under
+# --tags appuser. The ordering lives in playbooks/bootstrap.yml, and the assert
+# in tasks/main.yml catches anyone who skips it.
+dependencies: []

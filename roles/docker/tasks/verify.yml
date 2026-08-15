@@ -1,0 +1,62 @@
+---
+# The point of this file: "state: present" succeeding is not the same as docker
+# working. A half-configured daemon, a compose plugin that did not land, or an
+# older docker.io still shadowing $PATH all produce a green playbook run and a
+# broken host. These tasks make the run fail where the problem is.
+
+- name: Read the docker engine version
+  ansible.builtin.command: docker --version
+  register: docker_cli_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the docker compose plugin version
+  ansible.builtin.command: docker compose version --short
+  register: docker_compose_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Report the installed versions
+  ansible.builtin.debug:
+    msg:
+      - "engine:  {{ docker_cli_version.stdout | default('not installed') }}"
+      - "compose: {{ docker_compose_version.stdout | default('not installed') }}"
+
+# Skipped under --check on a host that had no docker to begin with: nothing was
+# actually installed, so asserting on it would report a failure that only says
+# "check mode does not install things".
+- name: Assert docker and compose are present and recent enough
+  when: not ansible_check_mode or docker_preexisting.rc | default(1) == 0
+  block:
+    - name: Assert the docker CLI responds
+      ansible.builtin.assert:
+        that:
+          - docker_cli_version.rc | default(1) == 0
+        fail_msg: "`docker --version` did not run on {{ inventory_hostname }}."
+        quiet: true
+
+    - name: Assert the compose v2 plugin is installed
+      ansible.builtin.assert:
+        that:
+          - docker_compose_version.rc | default(1) == 0
+        fail_msg: >-
+          `docker compose` is unavailable. The usual cause is docker coming from
+          somewhere other than Docker's apt repo -- the distro's docker.io
+          package, or a snap -- neither of which ships the v2 plugin. Check
+          `which -a docker` and `snap list docker` on the host.
+        quiet: true
+
+    - name: Assert the versions meet the configured minimums
+      ansible.builtin.assert:
+        that:
+          - docker_cli_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+')
+            is version(docker_min_version, '>=')
+          - docker_compose_version.stdout | regex_replace('^v', '')
+            is version(docker_compose_min_version, '>=')
+        fail_msg: >-
+          Installed versions are below the minimums in defaults/main.yml
+          (engine >= {{ docker_min_version }},
+          compose >= {{ docker_compose_min_version }}).
+        quiet: true

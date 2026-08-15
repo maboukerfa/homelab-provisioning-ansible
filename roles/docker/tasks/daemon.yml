@@ -1,0 +1,23 @@
+---
+- name: Ensure /etc/docker exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Rendered from the dict rather than a Jinja template: the variable stays the
+# single source of truth, so overriding one key in group_vars does not mean
+# forking a template to add it.
+- name: Write /etc/docker/daemon.json
+  ansible.builtin.copy:
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    # Anything already in that file was put there for a reason you may have
+    # forgotten. Keep a timestamped copy before overwriting it.
+    backup: true
+  notify: Restart docker

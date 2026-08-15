@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  role_name: docker
+  namespace: homelab
+  author: maboukerfa
+  description: >-
+    Install Docker Engine and the Compose v2 plugin from Docker's own apt
+    repository, then verify both actually work.
+  license: MIT
+  # systemd_service, and the modern assert/block semantics used in verify.yml.
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - docker
+    - containers
+
+dependencies: []
