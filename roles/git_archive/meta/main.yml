@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: git_archive
+  namespace: homelab
+  author: maboukerfa
+  description: >-
+    Commit a directory to git on a systemd timer and push it to a remote,
+    refusing to run if a secret is unignored or a blob is too large to push.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - git
+    - systemd
+    - backup
+
+# Same reasoning as the appuser and stack roles: a dependencies: entry would
+# re-run the whole docker role on every archive deploy. This role needs the
+# appuser identity to exist, and asserts nothing about it beyond the uid it is
+# told to run as -- the bootstrap playbook establishes the host.
+dependencies: []

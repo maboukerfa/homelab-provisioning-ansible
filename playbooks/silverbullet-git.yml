@@ -1,0 +1,42 @@
+---
+# Archives /srv/space to a private git repo every six hours: a systemd timer
+# that commits whatever changed and pushes it.
+#
+# Separate from playbooks/silverbullet.yml on purpose. That playbook deploys the
+# notes server and needs nothing but an .env; this one needs a repo created at
+# the forge and a deploy key placed on the host. Keeping them apart means a
+# routine redeploy of the container never blocks on GitHub.
+#
+# Two manual steps, once, both deliberately not in git:
+#   * a private repo, with the public half of the deploy key registered on it
+#     with write access
+#   * /etc/silverbullet/deploy_key on the host
+# Both are spelled out in stacks/silverbullet/README.md; the role refuses to
+# install the timer until they are done.
+#
+# Set silverbullet_git_remote in inventory/group_vars/all.yml first.
+
+- name: Archive the SilverBullet space to git
+  hosts: homelab
+  become: true
+
+  roles:
+    - role: git_archive
+      tags: [silverbullet, git]
+      vars:
+        git_archive_name: silverbullet
+        git_archive_dir: /srv/space
+        git_archive_remote: "{{ silverbullet_git_remote }}"
+
+        # Every six hours. The space is small and a pass with no changes costs
+        # an ssh handshake, so the interval is not about cost -- it is how much
+        # writing a dead disk is allowed to take with it. Four commits a day
+        # also keeps `git log` readable, which a 15-minute timer does not.
+        git_archive_interval: 6h
+
+        # Holds a live SilverBullet session. Ignored below, and named here as
+        # well so the script hard-stops rather than trusting that it worked.
+        git_archive_secrets:
+          - .silverbullet.auth.json
+        git_archive_ignore_src: >-
+          {{ playbook_dir }}/../stacks/silverbullet/space.gitignore

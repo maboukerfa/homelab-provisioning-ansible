@@ -1,0 +1,151 @@
+---
+# Commit a directory to git on a timer and push it to a remote. One-way, host
+# to remote, by design -- see files/git-archive.sh for why pulling back down is
+# not offered.
+#
+# One role invocation is one archived directory. Everything is keyed off
+# git_archive_name, so a second stack means a second invocation with a
+# different name and nothing else to reconcile.
+
+# Required. Names the units, the config directory and the script:
+#
+#   <name>-git.service / <name>-git.timer
+#   /etc/<name>/deploy_key
+#   /opt/git-archive/<name>-git.sh
+git_archive_name: ""
+
+# Required. The working tree to archive. This is a /srv path -- the precious
+# half of the filesystem convention -- not something under /opt.
+git_archive_dir: ""
+
+# Required. SSH remote, e.g. git@github.com:you/silverbullet-space.git
+#
+# SSH rather than HTTPS because the credential is then a deploy key, which is
+# scoped to one repo. A PAT in a netrc would hand this host write access to
+# every repo on the account.
+git_archive_remote: ""
+git_archive_remote_name: origin
+git_archive_branch: main
+
+# Identity on the commits. A machine name, not yours: `git log` should make it
+# obvious which commits nobody typed.
+git_archive_commit_name: "{{ git_archive_name }}"
+git_archive_commit_email: "{{ git_archive_name }}@homelab"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+# /etc holds the key and the pinned host key; /opt holds the script. Both are
+# root-owned and reproducible -- the only thing here that cannot be recreated
+# from this repo is the private key itself.
+git_archive_conf_dir: "/etc/{{ git_archive_name }}"
+git_archive_deploy_key: "{{ git_archive_conf_dir }}/deploy_key"
+git_archive_known_hosts_file: "{{ git_archive_conf_dir }}/known_hosts"
+git_archive_bin_dir: "{{ homelab_stack_root | default('/opt') }}/git-archive"
+
+# Derived. <name>-git.service and <name>-git.timer, matching the hand-installed
+# units this replaced.
+git_archive_unit: "{{ git_archive_name }}-git"
+
+# ---------------------------------------------------------------------------
+# Identity the timer runs as
+# ---------------------------------------------------------------------------
+# Must match the owner of git_archive_dir, which for a bind-mounted stack is
+# the uid the container runs as. Not cosmetic: the script writes inside the
+# tree's .git -- add, commit, gc -- so a timer running as the wrong uid fails
+# every six hours and the failure is invisible unless you read the journal.
+#
+# The deploy key is chowned to match, because the script refuses to run against
+# a key it cannot read.
+#
+# By name rather than by uid, unlike a compose file's `user:` line -- the kernel
+# never sees a name through a bind mount, but sudo and systemd both resolve one,
+# and the role has to `git init` as this identity. On a bootstrapped host it
+# resolves to the pinned 2000:2000 either way.
+git_archive_user: "{{ appuser_name | default('appuser') }}"
+git_archive_group: "{{ appuser_group | default('appuser') }}"
+
+# ---------------------------------------------------------------------------
+# Host key pinning
+# ---------------------------------------------------------------------------
+# The script runs ssh with StrictHostKeyChecking=yes and an explicit
+# UserKnownHostsFile, so the key has to be here -- there is no prompt to accept
+# it at and no ~/.ssh to fall back on. appuser has no shell and no .ssh
+# directory, which is exactly the trap a hand-run `ssh-keyscan >> ~/.ssh/...`
+# falls into: it pins the key for the admin account, not for uid 2000.
+#
+# Pinned rather than keyscanned on the host so the trusted value lives in git
+# and changes show up in a diff. Verify it against
+# https://api.github.com/meta (.ssh_keys) or GitHub's published fingerprints:
+#   SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU  (ED25519)
+#
+# If GitHub rotates a key -- they rotated RSA in March 2023 -- pushes start
+# failing loudly with a host key mismatch. That is the correct failure: fix it
+# here, after checking the fingerprint, rather than by disabling the check.
+# Override the whole list for a non-GitHub forge.
+git_archive_known_hosts:
+  - "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+# Monotonic by default: six hours after the last run finished, whenever that
+# was. Bounds how much writing a dead disk can take with it while collapsing a
+# day's edits into four commits.
+git_archive_interval: 6h
+git_archive_boot_delay: 5m
+
+# Spreads the run out so several archives on one host do not all wake, walk
+# their trees and push at the same instant.
+git_archive_splay: 5m
+
+# Set to a systemd calendar expression -- e.g. "00/6:00" for 00:00, 06:00,
+# 12:00, 18:00 -- to use wall-clock times instead of the monotonic interval.
+# That form also gets Persistent=true, so a run missed while the box was off
+# happens shortly after it comes back. Empty means use the interval above.
+git_archive_on_calendar: ""
+
+git_archive_timeout: 10m
+
+# ---------------------------------------------------------------------------
+# Safety rails, all enforced by the script before anything is staged
+# ---------------------------------------------------------------------------
+# Files that must never reach a commit, checked against .gitignore and the
+# index on every run. Belt and braces: once a credential is pushed it is
+# leaked whatever you do to the history afterwards.
+git_archive_secrets: []
+
+# Path on the control node to a .gitignore for the tree, copied in on every run
+# and always before the initial `git add`. Empty leaves any existing .gitignore
+# alone -- in which case git_archive_secrets is the only thing standing between
+# a session file and the remote.
+git_archive_ignore_src: ""
+
+# A file written seconds ago may still be mid-write. Nothing is lost by leaving
+# it for the next pass, so the script skips the whole run rather than commit
+# half a file.
+git_archive_quiet_seconds: 30
+
+# GitHub hard-rejects blobs over 100MB, and a rejected push blocks every later
+# commit until the offender is rewritten out of history. Catching it before it
+# is staged is much cheaper than fixing it after.
+git_archive_warn_mb: 50
+git_archive_fail_mb: 95
+
+# ---------------------------------------------------------------------------
+# Behaviour of the role itself
+# ---------------------------------------------------------------------------
+# Initialise the tree as a repo if it is not one yet: .gitignore, git init,
+# the commit identity and the remote. The first commit and push are left to the
+# script's first run, so there is exactly one code path that produces commits.
+git_archive_init_repo: true
+
+# Run the unit once at the end of the play. On by default because the entire
+# point of this role is a job you never look at: a deploy that installs a
+# broken key and then says nothing for six hours before failing into a journal
+# nobody reads is the failure mode this is supposed to prevent.
+git_archive_run_now: true
+
+# present | absent. absent stops and disables the timer and removes the units
+# and the script. It never touches git_archive_dir or its history.
+git_archive_state: present

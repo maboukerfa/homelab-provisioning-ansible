@@ -1,0 +1,25 @@
+# Deployed to /srv/space/.gitignore by roles/git_archive. Edits made on the
+# host are overwritten on the next run of playbooks/silverbullet-git.yml --
+# change this file instead.
+#
+# SilverBullet hides dotfiles from the space listing, so this does not show up
+# as a page.
+
+# Session/auth state. Mode 600 on disk and NOT something to publish, even to a
+# private repo -- this is the one entry here that actually matters, and the
+# only one the archive script also refuses to run without.
+.silverbullet.auth.json
+
+# SilverBullet's own index/state -- rebuildable from the markdown, and a live
+# SQLite file committed mid-write is worse than useless. Not present under v2
+# (the client indexes into IndexedDB), kept for when that changes back.
+.silverbullet.db
+.silverbullet.db-shm
+.silverbullet.db-wal
+data.db
+data.db-*
+
+# v1 plug bundles, refetched on demand.
+_plug/
+
+.DS_Store

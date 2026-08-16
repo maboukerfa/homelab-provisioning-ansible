@@ -1,0 +1,31 @@
+---
+# Removes the schedule and the machinery, never the history. git_archive_dir,
+# its .git and the remote are all left exactly as they are -- this role can put
+# a directory under archive, and it does not get to take one out of existence.
+
+- name: Stop and disable the archive timer
+  ansible.builtin.systemd_service:
+    name: "{{ git_archive_unit }}.timer"
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Remove the units and the script
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/systemd/system/{{ git_archive_unit }}.timer"
+    - "/etc/systemd/system/{{ git_archive_unit }}.service"
+    - "{{ git_archive_bin_dir }}/{{ git_archive_unit }}.sh"
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Report what was left behind
+  ansible.builtin.debug:
+    msg: >-
+      {{ git_archive_unit }} removed. {{ git_archive_dir }} and its history are
+      untouched, as is {{ git_archive_deploy_key }} -- revoke the key at the
+      forge if this host should no longer be able to push.

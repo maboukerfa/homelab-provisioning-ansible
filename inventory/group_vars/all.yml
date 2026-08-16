@@ -18,6 +18,18 @@ ansible_user: maboukerfa
 homelab_stack_root: /opt
 homelab_data_root: /srv
 
+# ---------------------------------------------------------------------------
+# Archive remotes
+# ---------------------------------------------------------------------------
+# Where playbooks/silverbullet-git.yml pushes /srv/space. A **private** repo:
+# the space is your notes, and the archive is a verbatim copy of them.
+#
+# SSH, not HTTPS, because the credential is then a deploy key scoped to this one
+# repo. A token would give the homelab write access to every repo on the
+# account. The key itself is placed on the host by hand and never enters this
+# repo -- see stacks/silverbullet/README.md.
+silverbullet_git_remote: git@github.com:maboukerfa/SilverBullet_space.git
+
 # Role knobs live in roles/<name>/defaults/main.yml and are documented there.
 # Override them here (or in group_vars/homelab.yml) rather than editing defaults,
 # so a role stays a drop-in and your choices stay in one greppable place.

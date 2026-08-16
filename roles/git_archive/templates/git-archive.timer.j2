@@ -1,0 +1,24 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Archive {{ git_archive_dir }} to git ({{ git_archive_on_calendar if git_archive_on_calendar else 'every ' ~ git_archive_interval }})
+
+[Timer]
+Unit={{ git_archive_unit }}.service
+{% if git_archive_on_calendar %}
+# Wall-clock times. Persistent so a run missed while the box was off happens
+# shortly after it comes back rather than waiting for the next slot.
+OnCalendar={{ git_archive_on_calendar }}
+Persistent=true
+{% else %}
+# Monotonic: {{ git_archive_interval }} after the last run finished. A pass with
+# no changes is two stat walks, an ssh handshake and an exit, so the interval is
+# chosen for how much writing a dead disk may take with it, not for cost.
+OnBootSec={{ git_archive_boot_delay }}
+OnUnitActiveSec={{ git_archive_interval }}
+{% endif %}
+# Keeps several archives on one host from all waking, walking their trees and
+# pushing at the same instant.
+RandomizedDelaySec={{ git_archive_splay }}
+
+[Install]
+WantedBy=timers.target

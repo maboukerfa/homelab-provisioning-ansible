@@ -1,0 +1,45 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Archive {{ git_archive_dir }} to {{ git_archive_remote }}
+# The push needs a route, and on a boot-time run the timer fires before DHCP
+# has necessarily finished.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ git_archive_bin_dir }}/{{ git_archive_unit }}.sh
+
+# Must match the owner of {{ git_archive_dir }}, which is the uid the
+# application writing it runs as. Not cosmetic: the script runs git add, git
+# commit and git gc, all of which write inside that tree's .git. Wrong uid and
+# it fails every {{ git_archive_interval }}, silently, forever.
+# {{ git_archive_deploy_key }} is chowned to match, or the readability
+# check near the top of the script rejects it.
+User={{ git_archive_user }}
+Group={{ git_archive_group }}
+
+Environment=ARCHIVE_DIR={{ git_archive_dir }}
+Environment=BRANCH={{ git_archive_branch }}
+Environment=REMOTE_NAME={{ git_archive_remote_name }}
+Environment=DEPLOY_KEY={{ git_archive_deploy_key }}
+Environment=KNOWN_HOSTS={{ git_archive_known_hosts_file }}
+Environment=QUIET_SECONDS={{ git_archive_quiet_seconds }}
+Environment=WARN_MB={{ git_archive_warn_mb }}
+Environment=FAIL_MB={{ git_archive_fail_mb }}
+Environment="SECRETS={{ git_archive_secrets | join(' ') }}"
+
+# This is housekeeping. It should never be the reason a save feels slow.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec={{ git_archive_timeout }}
+
+# The script needs to write exactly one place. ProtectHome is not set: the tree
+# may well live under /home on a host that predates the /srv convention.
+ProtectSystem=strict
+ReadWritePaths={{ git_archive_dir }}
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

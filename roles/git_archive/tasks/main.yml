@@ -1,0 +1,265 @@
+---
+- name: Assert the caller filled in the required variables
+  ansible.builtin.assert:
+    that:
+      - git_archive_name | length > 0
+      - git_archive_dir | length > 0
+      - git_archive_remote | length > 0
+    fail_msg: >-
+      git_archive_name, git_archive_dir and git_archive_remote must all be set
+      by the playbook including this role. See
+      roles/git_archive/defaults/main.yml.
+    quiet: true
+
+- name: Remove the archive timer
+  ansible.builtin.include_tasks: absent.yml
+  when: git_archive_state == 'absent'
+
+- name: Install the archive timer
+  when: git_archive_state != 'absent'
+  block:
+
+    # -----------------------------------------------------------------------
+    # Prerequisites
+    # -----------------------------------------------------------------------
+    - name: Ensure git is installed
+      ansible.builtin.apt:
+        name: git
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # The unit runs as this identity and the tree has to already be owned by it.
+    # Checked rather than assumed: `useradd`-less hosts fail much later, inside
+    # a systemd unit, with nothing but "Failed to determine user credentials".
+    - name: Look up the identity the timer will run as
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ git_archive_user }}"
+        fail_key: false
+
+    - name: Assert that identity exists
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['getent_passwd'][git_archive_user] is not none
+        fail_msg: >-
+          git_archive_user is {{ git_archive_user }}, which does not exist on
+          {{ inventory_hostname }} -- the appuser role has not run here yet.
+          Run playbooks/bootstrap.yml first.
+        quiet: true
+
+    - name: Check the directory to archive exists
+      ansible.builtin.stat:
+        path: "{{ git_archive_dir }}"
+      register: git_archive_dir_stat
+
+    - name: Assert the directory to archive exists
+      ansible.builtin.assert:
+        that:
+          - git_archive_dir_stat.stat.exists
+          - git_archive_dir_stat.stat.isdir
+        fail_msg: >-
+          {{ git_archive_dir }} does not exist. It is created by the stack that
+          owns it -- deploy that first, then run this playbook.
+        quiet: true
+
+    # -----------------------------------------------------------------------
+    # Credentials. Neither of these is generated here: a key this role could
+    # recreate is a key that silently rotates on a re-run, invalidating the
+    # deploy key registered with the forge and breaking every later push.
+    # -----------------------------------------------------------------------
+    - name: Ensure the config directory exists
+      ansible.builtin.file:
+        path: "{{ git_archive_conf_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Check the deploy key is present
+      ansible.builtin.stat:
+        path: "{{ git_archive_deploy_key }}"
+      register: git_archive_key_stat
+
+    - name: Assert the deploy key is present
+      ansible.builtin.assert:
+        that:
+          - git_archive_key_stat.stat.exists
+        fail_msg: >-
+          {{ git_archive_deploy_key }} is missing. Like a stack's .env it is
+          deliberately not in git and has to be placed on the host once:
+
+            sudo ssh-keygen -t ed25519 -N '' -C '{{ git_archive_name }}-archive'
+                -f {{ git_archive_deploy_key }}
+            sudo cat {{ git_archive_deploy_key }}.pub
+
+          then add that public key to {{ git_archive_remote }} as a deploy key
+          with write access. See README.md.
+        quiet: true
+
+    # Enforced rather than merely documented. ssh refuses a key readable by
+    # anyone else, and a key left owned by root is the exact failure this role
+    # exists to stop being invisible.
+    - name: Lock down the deploy key
+      ansible.builtin.file:
+        path: "{{ git_archive_deploy_key }}"
+        owner: "{{ git_archive_user }}"
+        group: "{{ git_archive_group }}"
+        mode: "0600"
+
+    - name: Pin the remote's host keys
+      ansible.builtin.copy:
+        content: "{{ git_archive_known_hosts | join('\n') }}\n"
+        dest: "{{ git_archive_known_hosts_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # -----------------------------------------------------------------------
+    # The script
+    # -----------------------------------------------------------------------
+    - name: Ensure the script directory exists
+      ansible.builtin.file:
+        path: "{{ git_archive_bin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Root-owned and copied verbatim, not templated: the copy on the host is
+    # byte-identical to the one in this repo, so `diff` against it means
+    # something and the identity that runs it cannot rewrite it.
+    - name: Install the archive script
+      ansible.builtin.copy:
+        src: git-archive.sh
+        dest: "{{ git_archive_bin_dir }}/{{ git_archive_unit }}.sh"
+        owner: root
+        group: root
+        mode: "0755"
+
+    # -----------------------------------------------------------------------
+    # The repository
+    # -----------------------------------------------------------------------
+    # Before `git init`, not inside it. A .gitignore that lands late is a
+    # .gitignore that lands after the first `git add -A` has already staged the
+    # session file it was written to exclude -- and doing it here rather than in
+    # repo.yml keeps the ignore list managed on every run, not only on the run
+    # that created the repo.
+    - name: Install the gitignore for the tree
+      ansible.builtin.copy:
+        src: "{{ git_archive_ignore_src }}"
+        dest: "{{ git_archive_dir }}/.gitignore"
+        owner: "{{ git_archive_user }}"
+        group: "{{ git_archive_group }}"
+        mode: "0644"
+      when: git_archive_ignore_src | length > 0
+
+    - name: Initialise the repository
+      ansible.builtin.include_tasks: repo.yml
+      when: git_archive_init_repo | bool
+
+    - name: Check the directory is a repository
+      ansible.builtin.stat:
+        path: "{{ git_archive_dir }}/.git"
+      register: git_archive_repo_stat
+
+    - name: Assert the directory is a repository
+      ansible.builtin.assert:
+        that:
+          - git_archive_repo_stat.stat.exists
+        fail_msg: >-
+          {{ git_archive_dir }} is not a git repository and
+          git_archive_init_repo is false. Either set it true or run `git init`
+          there by hand.
+        quiet: true
+
+    # -----------------------------------------------------------------------
+    # The units
+    # -----------------------------------------------------------------------
+    - name: Install the archive service unit
+      ansible.builtin.template:
+        src: git-archive.service.j2
+        dest: "/etc/systemd/system/{{ git_archive_unit }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install the archive timer unit
+      ansible.builtin.template:
+        src: git-archive.timer.j2
+        dest: "/etc/systemd/system/{{ git_archive_unit }}.timer"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # daemon_reload here rather than in a handler: handlers run at the end of
+    # the play, and the run-now task below has to see the units as they are on
+    # disk now, not as systemd remembers them from last time.
+    - name: Enable and start the archive timer
+      ansible.builtin.systemd_service:
+        name: "{{ git_archive_unit }}.timer"
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    # -----------------------------------------------------------------------
+    # Prove it works, now, while someone is watching
+    # -----------------------------------------------------------------------
+    # Type=oneshot, so `systemctl start` blocks until the script exits and
+    # returns its status. A deploy that installs an unregistered key and then
+    # says nothing until it fails into a journal nobody reads is precisely the
+    # failure this role is meant to remove.
+    # restarted, not started. Enabling the timer above makes systemd fire the
+    # service straight away -- OnBootSec is long past on a host that has been up
+    # a while -- so `started` arrives to find a run already in flight, decides
+    # there is nothing to do, and returns ok. It then reports ok whatever that
+    # run goes on to do, which is worse than not running it at all: a green
+    # deploy over a failed push. restarted always produces a run of its own.
+    - name: Run the archive once now
+      ansible.builtin.systemd_service:
+        name: "{{ git_archive_unit }}.service"
+        state: restarted
+      register: git_archive_first_run
+      # Registered and reported on below rather than allowed to abort the play:
+      # a first run that fails still leaves a correctly installed timer, and
+      # the useful output is the journal, not Ansible's wrapper around it.
+      ignore_errors: true # noqa: ignore-errors
+      when: git_archive_run_now | bool
+
+    # And ask systemd how it went rather than trusting the module's own result,
+    # for the same reason. Result is `success` or the way it died -- `exit-code`
+    # for a script that returned non-zero, `timeout` for one that hung.
+    - name: Read what systemd made of that run # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          systemctl show {{ git_archive_unit }}.service
+          --property=Result --value
+      changed_when: false
+      register: git_archive_run_result
+      when: git_archive_run_now | bool
+
+    - name: Read the journal for that run
+      ansible.builtin.command:
+        cmd: "journalctl -u {{ git_archive_unit }}.service --no-pager -n 20"
+      changed_when: false
+      register: git_archive_journal
+      when: git_archive_run_now | bool
+
+    - name: Report the result of that run
+      ansible.builtin.assert:
+        that:
+          - git_archive_run_result.stdout | trim == 'success'
+        success_msg: >-
+          {{ git_archive_unit }} ran cleanly, next in
+          {{ git_archive_on_calendar if git_archive_on_calendar
+             else git_archive_interval }}:
+          {{ git_archive_journal.stdout_lines[-3:] | join(' | ') }}
+        fail_msg: >-
+          {{ git_archive_unit }}.service failed on its first run. The timer is
+          installed and will keep retrying, but fix this now -- the last lines
+          of its journal were:
+
+          {{ git_archive_journal.stdout_lines[-10:] | join('
+          ') }}
+        quiet: true
+      when: git_archive_run_now | bool

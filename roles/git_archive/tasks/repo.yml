@@ -1,0 +1,76 @@
+---
+# Turn git_archive_dir into a repository pointed at the remote. What this
+# deliberately does NOT do is make the first commit or the first push: the
+# script does that on its first run, so there is exactly one code path that
+# produces commits and it is the one that runs four times a day.
+
+- name: Check whether the tree is already a repository
+  ansible.builtin.stat:
+    path: "{{ git_archive_dir }}/.git"
+  register: git_archive_existing_repo
+
+# Every task here runs as the archiving identity rather than as root, for two
+# separate reasons that both bite:
+#
+#   * Ownership. `git init` as root leaves .git owned by root, and the timer --
+#     which runs as {{ git_archive_user }} and writes inside .git on every pass
+#     -- then fails every time, forever. Less obviously, `git config` and
+#     `git remote` rewrite .git/config through a temp file and a rename, so
+#     running just those two as root is enough to plant a root-owned file in an
+#     otherwise appuser-owned .git.
+#
+#   * safe.directory. Root reaching a repo owned by someone else trips git's
+#     dubious-ownership check, and in the --local path that surfaces as the
+#     thoroughly misleading "fatal: --local can only be used inside a git
+#     repository". Matching the owner removes the question instead of
+#     suppressing the answer, which is what -c safe.directory would do.
+#
+# The script sets -c safe.directory anyway, belt and braces: it runs as the
+# right uid too, but a repo restored from a clone by hand may not be.
+- name: Set up the repository as {{ git_archive_user }}
+  become: true
+  become_user: "{{ git_archive_user }}"
+  block:
+
+    - name: Initialise the repository # noqa: command-instead-of-module
+      # ansible.builtin.git is not the module for this: it clones a remote into
+      # a path. There is already content here and nothing yet to clone from --
+      # the whole point is putting an existing directory under version control.
+      # Same for the config and remote calls below.
+      ansible.builtin.command:
+        cmd: "git init -b {{ git_archive_branch }}"
+        chdir: "{{ git_archive_dir }}"
+        creates: "{{ git_archive_dir }}/.git"
+      when: not git_archive_existing_repo.stat.exists
+
+    - name: Set the commit identity
+      community.general.git_config:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        scope: local
+        repo: "{{ git_archive_dir }}"
+      loop:
+        - {name: user.name, value: "{{ git_archive_commit_name }}"}
+        - {name: user.email, value: "{{ git_archive_commit_email }}"}
+      loop_control:
+        label: "{{ item.name }}={{ item.value }}"
+
+    - name: Read the currently configured remote # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "git remote get-url {{ git_archive_remote_name }}"
+        chdir: "{{ git_archive_dir }}"
+      register: git_archive_current_remote
+      changed_when: false
+      failed_when: false
+
+    # add or set-url, so pointing an existing archive at a new repo is a
+    # variable change rather than a manual step on the host.
+    - name: Set the archive remote # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          git remote
+          {{ 'set-url' if git_archive_current_remote.rc == 0 else 'add' }}
+          {{ git_archive_remote_name }} {{ git_archive_remote }}
+        chdir: "{{ git_archive_dir }}"
+      changed_when: true
+      when: git_archive_current_remote.stdout | trim != git_archive_remote

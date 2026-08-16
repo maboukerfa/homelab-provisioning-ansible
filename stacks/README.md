@@ -9,6 +9,7 @@ stacks/
     compose.yaml     # committed
     .env.example     # committed -- documents the required keys, holds no values
     README.md        # optional: why this stack is configured the way it is
+    space.gitignore  # optional: deployed into the data dir by roles/git_archive
 ```
 
 `compose.yaml` is the name the Compose spec settled on. Docker still picks up
