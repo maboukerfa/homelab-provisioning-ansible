@@ -1,0 +1,147 @@
+services:
+  litellm:
+    # v1.97.0 is sha256:4b3226f4ccd7793d7dca6862d3681604d7ab640d8d6285be6061fd48514e6e71
+    # and is what `main-stable` pointed at when this was pinned. Pinned to the
+    # version rather than to `main-stable`, which moves: an upgrade should be a
+    # line in this diff, not a side effect of the next unrelated deploy.
+    #
+    # `litellm-database`, not `litellm`: this variant ships the prisma client
+    # and runs the schema migration at startup, which is what makes the
+    # database below usable without a manual migrate step.
+    image: docker.litellm.ai/berriai/litellm-database:v1.97.0
+    container_name: litellm
+    restart: unless-stopped
+    # No `user:` line, unlike every other container in this repo: the image
+    # ends on USER root and this service mounts nothing from the host, so a
+    # pinned uid would buy none of what it buys for a stack that owns files on
+    # /srv. What is left is capped by cap_drop and no-new-privileges below.
+    # Running it as 2000 may well work -- the image goes out of its way to keep
+    # the prisma engines readable by any uid -- but that is untested here, and
+    # an untested uid on a container that migrates a database is not a guess
+    # worth making in a compose file.
+    environment:
+      # The admin credential. Gates /ui and mints the virtual keys everything
+      # else authenticates with, so it is the one secret worth treating like a
+      # root password. LiteLLM requires the `sk-` prefix.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env, sk- prefixed}
+      # Encrypts provider API keys at rest in the database. Rotating it does
+      # not re-encrypt anything -- every stored key becomes undecryptable and
+      # has to be re-entered by hand. Set it once, keep it forever, back it up
+      # with the database.
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
+      # `db` is the service name below, resolved on the compose network. The
+      # password is interpolated from the same variable Postgres is initialised
+      # with, so the two cannot drift apart. It lands inside a URL, which is why
+      # .env.example asks for a hex string: @ : / # would need escaping here.
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/litellm
+      # Models, virtual keys and spend logs live in Postgres rather than in a
+      # config.yaml. One source of truth, editable from the UI, and it is what
+      # makes /srv the only precious half of this stack.
+      STORE_MODEL_IN_DB: "True"
+      # Turn a failed schema migration into a failed start. The default is to
+      # print a yellow warning and serve anyway, which is the exact failure
+      # this homelab tries not to have: a container that is up, answers its
+      # healthcheck, and is running against a half-migrated schema. A crash
+      # loop is louder and easier to debug than silently wrong spend logs.
+      ENFORCE_PRISMA_MIGRATION_CHECK: "True"
+    ports:
+      # Published on 8006 to leave 4000 free; the container still listens on
+      # 4000 internally, which is what the healthcheck below has to agree with.
+      - '8006:4000'
+    # Governs `compose up` and nothing else. After a host reboot Docker starts
+    # both containers from `restart:` with no ordering between them, so the
+    # gateway can and will come up first -- which is the other half of why a
+    # failed migration has to exit above. It restarts until Postgres is there.
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # The runtime image ships no curl, so this is a Python one-liner --
+      # python is on PATH from the venv the app runs out of. urlopen raises on
+      # anything but 2xx, which is exactly the exit status a healthcheck wants.
+      #
+      # /health/readiness, not /health/liveliness: both are unauthenticated
+      # (/health, which probes every configured model, is not), but readiness
+      # answers 503 when the database is unreachable while liveliness answers
+      # 200 as long as the process is up. A gateway that cannot reach Postgres
+      # cannot check a virtual key, so it is not healthy in any useful sense.
+      # The database probe behind it is cached for 15s, so this costs nothing.
+      test:
+        - CMD
+        - python
+        - "-c"
+        - |
+          import urllib.request
+          urllib.request.urlopen(
+              "http://localhost:4000/health/readiness", timeout=5
+          )
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Generous on purpose: the first start of a fresh database runs the whole
+      # prisma migration before the port opens. Too short here and Docker marks
+      # a perfectly healthy first boot as failed.
+      start_period: 90s
+    # Nothing here needs elevated privileges: it binds 4000, which is above the
+    # privileged range, and talks to Postgres over TCP.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  db:
+    # 16.15 is sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
+    # The major is the part that matters: minor upgrades inside 16.x start on
+    # the existing data directory, a jump to 17 does not -- it needs pg_upgrade
+    # and refuses to start until it gets it. Bump the minor freely, treat the
+    # major as a migration.
+    image: postgres:16.15
+    container_name: litellm-db
+    restart: unless-stopped
+    # appuser, the same identity every other container in this homelab runs as.
+    #
+    # The image has its own `postgres` user at 999 and nothing forces us onto
+    # it. initdb is the one part that insists on a passwd entry for the uid it
+    # runs under -- it looks its own uid up by name and exits if that fails --
+    # and the entrypoint already solves that: when `getent passwd $(id -u)`
+    # comes up empty it preloads libnss_wrapper (the image installs
+    # libnss-wrapper for this) and fabricates the entry for the length of
+    # initdb. Everything after that is content with a bare numeric uid.
+    #
+    # 999 works too, and is what the upstream quickstart gets by default. It is
+    # the wrong choice on a Debian host: 999 sits inside the range the distro
+    # hands out to system accounts, so it is usually already taken -- `caddy`
+    # on this one -- and that account would then own the database files and be
+    # able to read and rewrite them.
+    #
+    # Setting the uid explicitly also keeps the entrypoint out of root, so it
+    # never chowns the data directory out from under the ownership Ansible gave
+    # it, and the cap_drop below survives -- it would not if the entrypoint
+    # still had to setuid away from root.
+    user: "2000:2000"
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      # Read at initdb time only. Changing it later does NOT change the
+      # password on an existing database -- see the README before you try.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      # The whole reason this stack has a /srv directory. Owned by 999 on the
+      # host, created by the playbook before compose runs.
+      - /srv/litellm/postgres:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP deliberately. During initdb the server listens on the unix
+      # socket only, so a socket-based pg_isready reports "accepting
+      # connections" while the database is still being created -- LiteLLM then
+      # starts, fails its migration and restarts. Forcing TCP means healthy
+      # here is the same event LiteLLM is actually waiting for.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published. The only thing that needs this database is the gateway
+    # above, which reaches it over the compose network.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

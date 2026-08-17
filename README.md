@@ -22,6 +22,7 @@ playbooks/
   bootstrap.yml          python3 -> docker -> appuser
   silverbullet.yml       deploy one stack
   silverbullet-git.yml   put that stack's data under version control
+  litellm.yml            deploy the LLM gateway and its database
 roles/
   docker/                install from Docker's apt repo, then verify it works
   appuser/               the service identity, uid/gid pinned
@@ -29,6 +30,7 @@ roles/
   git_archive/           commit a directory and push it, on a systemd timer
 stacks/                  compose files, one directory per app -- see stacks/README.md
   silverbullet/
+  litellm/
 ```
 
 ## Requirements
@@ -180,7 +182,9 @@ and is not:
 - **Data directories are created and chowned to appuser.** Getting there before
   Docker does is the point: Docker creates a missing bind-mount source itself,
   as `root:root`, and with a pinned `user:` the container then starts, passes its
-  healthcheck, and cannot write a byte.
+  healthcheck, and cannot write a byte. An image that genuinely insists on its
+  own uid can override `stack_data_owner`; check whether it really does first,
+  since a uid the distro also uses means a local account owns your data.
 - **The `.env` is checked to exist.** Secrets stay on the host and never enter
   this repo. The role never reads or rewrites the file — clobbering a working
   credential during a routine deploy is not a failure mode worth having. Commit

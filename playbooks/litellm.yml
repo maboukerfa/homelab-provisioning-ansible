@@ -1,0 +1,45 @@
+---
+# Deploys stacks/litellm/compose.yaml to /opt/litellm and brings it up: the
+# LiteLLM gateway plus the Postgres it keeps models, virtual keys and spend
+# logs in.
+#
+# Both run as appuser (2000:2000) -- the database included, which is not what
+# the postgres image does by default. See the comment on `user:` in the compose
+# file: the image's own uid is 999, which on a Debian host is nearly always
+# some unrelated system account already.
+#
+# One manual step, once: /opt/litellm/.env has to hold LITELLM_MASTER_KEY,
+# LITELLM_SALT_KEY and POSTGRES_PASSWORD, or the run stops at the preflight
+# check. See stacks/litellm/README.md.
+
+- name: Deploy LiteLLM
+  hosts: homelab
+  become: true
+
+  pre_tasks:
+    # Created explicitly rather than left to the role. Ansible's file module is
+    # mkdir -p: it stamps the owner, group and mode it was given onto every
+    # intermediate directory it has to create on the way, so leaving this one
+    # implicit would give /srv/litellm the data directory's 0700 by accident
+    # rather than by decision.
+    - name: Ensure the stack's data root exists
+      ansible.builtin.file:
+        path: /srv/litellm
+        state: directory
+        owner: "{{ appuser_uid | default(2000) }}"
+        group: "{{ appuser_gid | default(2000) }}"
+        mode: "0750"
+      tags: [litellm]
+
+  roles:
+    - role: stack
+      tags: [litellm]
+      vars:
+        stack_name: litellm
+        stack_data_dirs:
+          - /srv/litellm/postgres
+        # Owner is left at the role default, appuser. Only the mode differs:
+        # Postgres checks this itself and refuses to start on anything more
+        # permissive than 0750, and nothing else has any business inside a
+        # database's data directory anyway.
+        stack_data_mode: "0700"
