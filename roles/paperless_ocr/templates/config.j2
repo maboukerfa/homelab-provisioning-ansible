@@ -1,0 +1,16 @@
+{{ ansible_managed | comment }}
+# Knobs for {{ paperless_ocr_script }}, which reads this file itself. Not an
+# EnvironmentFile= on the unit, deliberately: a run by hand -- the --dry-run you
+# do before enabling the timer -- then sees exactly what the timer sees, instead
+# of the script's own defaults.
+#
+# Credentials are NOT here. They live in {{ paperless_ocr_env_file }}, placed by
+# hand and never written by Ansible. Anything already in the environment wins
+# over both files.
+PAPERLESS_URL={{ paperless_ocr_url }}
+LITELLM_URL={{ paperless_ocr_litellm_url }}
+OCR_MODEL={{ paperless_ocr_model }}
+TITLE_MODEL={{ paperless_ocr_title_model }}
+OCR_DPI={{ paperless_ocr_dpi }}
+OCR_LIMIT={{ paperless_ocr_limit }}
+PROCESSED_FIELD={{ paperless_ocr_field }}

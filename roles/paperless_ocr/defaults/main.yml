@@ -1,0 +1,117 @@
+---
+# Re-OCR the paperless documents nothing has been over yet and retitle them
+# from the transcription, on a systemd timer. One document is one LightOnOCR
+# call per page plus one call to a title model, both through the litellm proxy
+# on this host.
+#
+# INSTALLED DISABLED. Everything below lands on the host, the timer is not
+# started, and nothing is spent until paperless_ocr_enabled is flipped -- see
+# the bottom of this file.
+
+# ---------------------------------------------------------------------------
+# What it talks to
+# ---------------------------------------------------------------------------
+# localhost, not the tailnet names the interactive version of this script uses:
+# the timer runs on the same box paperless and the proxy do, so a pass needs
+# neither DNS, nor tailscale up, nor a round trip off the machine.
+paperless_ocr_url: http://localhost:8001
+paperless_ocr_litellm_url: http://localhost:8006
+
+# The vision model that reads the pages, and the model that names the document
+# from what it read. Both are names the proxy resolves, not provider model ids
+# -- change them there, not here, unless the name itself changed.
+paperless_ocr_model: lightonocr-2-1b
+paperless_ocr_title_model: openai/gpt-oss-120b
+
+# ---------------------------------------------------------------------------
+# What one pass does
+# ---------------------------------------------------------------------------
+# The custom field that means "text and title both came from this tool". It is
+# the whole reason a pass is cheap: documents carrying it true are skipped, so
+# an hourly timer over a paperless with nothing new in it is one listing call.
+# The script creates the field if it does not exist yet.
+paperless_ocr_field: ai-processed
+
+# Documents per pass. Not a cap on the backlog -- an hourly timer still drains
+# it, twenty an hour -- but a cap on what a single unattended pass can spend,
+# which is what you want the first time an import of two thousand documents
+# lands in the consume directory. 0 means every pending document, every pass.
+paperless_ocr_limit: 20
+
+# Rasterization DPI. 150 puts an A4 page a little under 1800px on the long
+# edge, which is where the model stops getting anything out of more pixels and
+# starts only getting slower.
+paperless_ocr_dpi: 150
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+# /etc holds the credentials; /opt holds the script. Same split as every other
+# role here: everything under /opt is reproducible from this repo, and the one
+# thing that is not lives in /etc and was placed by hand.
+paperless_ocr_conf_dir: /etc/paperless-ocr
+paperless_ocr_env_file: "{{ paperless_ocr_conf_dir }}/env"
+paperless_ocr_bin_dir: "{{ homelab_stack_root | default('/opt') }}/paperless-ocr"
+paperless_ocr_script: "{{ paperless_ocr_bin_dir }}/paperless-ocr.py"
+paperless_ocr_unit: paperless-ocr
+
+# ---------------------------------------------------------------------------
+# Identity the timer runs as
+# ---------------------------------------------------------------------------
+# The service identity, for want of a reason to add another one: this touches
+# nothing on disk outside its own private /tmp and needs no group membership at
+# all -- it is two HTTP endpoints and a ghostscript subprocess.
+#
+# The credentials file is chowned to match, because the script reads it itself
+# rather than having systemd read it as root first. That is what makes
+# `sudo {{ paperless_ocr_script }} --dry-run` work identically to the unit.
+paperless_ocr_user: "{{ appuser_name | default('appuser') }}"
+paperless_ocr_group: "{{ appuser_group | default('appuser') }}"
+
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+# Hourly, monotonic. A pass with nothing pending costs one listing call, so the
+# interval is chosen for how long a freshly scanned document sits there with a
+# filename for a title -- not for cost.
+paperless_ocr_interval: 1h
+paperless_ocr_boot_delay: 15m
+paperless_ocr_splay: 5m
+
+# Set to a systemd calendar expression -- "03:00" for once a night -- to use
+# wall-clock times instead of the interval above. That form also gets
+# Persistent=true, so a run missed while the box was off happens shortly after
+# it comes back.
+paperless_ocr_on_calendar: ""
+
+# Type=oneshot, so this is the ceiling on a whole pass, not on one document.
+# Twenty documents of a few pages each fit comfortably; a pass killed at the
+# ceiling loses only the document it was inside, because every other one was
+# already applied and marked as it went.
+paperless_ocr_timeout: 1h
+
+# ---------------------------------------------------------------------------
+# Behaviour of the role itself
+# ---------------------------------------------------------------------------
+# Run the script's --dry-run at the end of the play: it lists what a real pass
+# would pick up and sends nothing to either model. This is the cheap half of
+# what git_archive's run-now does -- it proves the token, the key, the URL and
+# the marker field are all right while somebody is watching, without spending
+# anything to find out.
+paperless_ocr_verify: true
+
+# THE TIMER IS OFF BY DEFAULT, and this is the switch.
+#
+# false installs everything and leaves the timer stopped and disabled: nothing
+# runs, nothing is spent, and `systemctl start paperless-ocr.service` still
+# does one pass by hand whenever you want one.
+#
+# Off by default because this role differs from everything else in this repo in
+# two ways that both argue for it. It costs money per document, and it
+# OVERWRITES the document content in paperless -- an unattended job that
+# rewrites your archive is one you switch on deliberately, having watched a
+# pass of it, rather than one that starts the moment a playbook mentions it.
+#
+# Flip it here or in inventory/group_vars/homelab.yml. Flipping it back stops
+# and disables the timer again.
+paperless_ocr_enabled: false

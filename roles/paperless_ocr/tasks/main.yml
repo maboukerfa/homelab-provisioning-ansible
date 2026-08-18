@@ -1,0 +1,188 @@
+---
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+- name: Ensure ghostscript is installed
+  ansible.builtin.apt:
+    name: ghostscript
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Checked rather than assumed: a missing identity fails much later, inside a
+# systemd unit, with nothing but "Failed to determine user credentials".
+- name: Look up the identity the timer will run as
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ paperless_ocr_user }}"
+    fail_key: false
+
+- name: Assert that identity exists
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['getent_passwd'][paperless_ocr_user] is not none
+    fail_msg: >-
+      paperless_ocr_user is {{ paperless_ocr_user }}, which does not exist on
+      {{ inventory_hostname }} -- the appuser role has not run here yet. Run
+      playbooks/bootstrap.yml first.
+    quiet: true
+
+# ---------------------------------------------------------------------------
+# Credentials. Not generated here and not templated from a variable: a token in
+# this repo is a token in git, and the whole point of the file is that it is the
+# one part of this role that cannot be recreated from a clone.
+# ---------------------------------------------------------------------------
+- name: Ensure the config directory exists
+  ansible.builtin.file:
+    path: "{{ paperless_ocr_conf_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check the credentials file is present
+  ansible.builtin.stat:
+    path: "{{ paperless_ocr_env_file }}"
+  register: paperless_ocr_env_stat
+
+- name: Assert the credentials file is present
+  ansible.builtin.assert:
+    that:
+      - paperless_ocr_env_stat.stat.exists
+    fail_msg: >-
+      {{ paperless_ocr_env_file }} is missing. Like a stack's .env it is
+      deliberately not in git and has to be placed on the host once:
+
+        sudo tee {{ paperless_ocr_env_file }} >/dev/null <<'EOF'
+        PAPERLESS_TOKEN=...
+        LITELLM_API_KEY=...
+        EOF
+
+      PAPERLESS_TOKEN comes from the paperless UI under My Profile, API Auth
+      Token. LITELLM_API_KEY is a virtual key minted in the LiteLLM UI at
+      /ui -- a key of its own rather than the master key, so what this spends
+      shows up separately and can be revoked on its own.
+    quiet: true
+
+# Enforced rather than documented: the script runs as {{ paperless_ocr_user }}
+# and reads this file itself, so it has to be that user's to read and nobody
+# else's. Left root-owned it would fail every pass, in the journal, unread.
+- name: Lock down the credentials file
+  ansible.builtin.file:
+    path: "{{ paperless_ocr_env_file }}"
+    owner: "{{ paperless_ocr_user }}"
+    group: "{{ paperless_ocr_group }}"
+    mode: "0600"
+
+# ---------------------------------------------------------------------------
+# The script and its configuration
+# ---------------------------------------------------------------------------
+- name: Install the knobs the script reads
+  ansible.builtin.template:
+    src: config.j2
+    dest: "{{ paperless_ocr_conf_dir }}/config"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure the script directory exists
+  ansible.builtin.file:
+    path: "{{ paperless_ocr_bin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Root-owned and copied verbatim, not templated: the copy on the host is
+# byte-identical to the one in this repo, so `diff` against it means something
+# and the identity that runs it cannot rewrite it.
+- name: Install the OCR script
+  ansible.builtin.copy:
+    src: paperless-ocr.py
+    dest: "{{ paperless_ocr_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+# ---------------------------------------------------------------------------
+# The units
+# ---------------------------------------------------------------------------
+- name: Install the service unit
+  ansible.builtin.template:
+    src: paperless-ocr.service.j2
+    dest: "/etc/systemd/system/{{ paperless_ocr_unit }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the timer unit
+  ansible.builtin.template:
+    src: paperless-ocr.timer.j2
+    dest: "/etc/systemd/system/{{ paperless_ocr_unit }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Both directions, from the one variable: false stops and disables a timer that
+# was running, so turning this off is a flag change and not a visit to the host.
+# The service unit is deliberately left enabled-able but unstarted either way --
+# `systemctl start {{ paperless_ocr_unit }}.service` is a pass on demand.
+- name: "Set the timer to {{ 'enabled' if paperless_ocr_enabled | bool else 'disabled' }}"
+  ansible.builtin.systemd_service:
+    name: "{{ paperless_ocr_unit }}.timer"
+    state: "{{ 'started' if paperless_ocr_enabled | bool else 'stopped' }}"
+    enabled: "{{ paperless_ocr_enabled | bool }}"
+    daemon_reload: true
+
+# ---------------------------------------------------------------------------
+# Prove it works, now, while somebody is watching -- without spending anything
+# ---------------------------------------------------------------------------
+# --dry-run lists what a real pass would pick up and calls neither model, so
+# this checks the token, the key, both URLs and the marker field for free. It
+# is the affordable half of what git_archive's run-now does, and the half that
+# matters for a job installed switched off: the first real pass will be run by
+# somebody weeks from now who did not deploy it.
+- name: Check the script can reach paperless with what it was given
+  ansible.builtin.command:
+    cmd: "{{ paperless_ocr_script }} --dry-run"
+  # As the identity the timer uses, not as root: it is the one that has to be
+  # able to read the credentials file, and checking that as root proves nothing.
+  become: true
+  become_user: "{{ paperless_ocr_user }}"
+  changed_when: false
+  failed_when: false
+  register: paperless_ocr_check
+  when: paperless_ocr_verify | bool
+
+- name: Report what a pass would pick up
+  ansible.builtin.assert:
+    that:
+      - paperless_ocr_check.rc == 0
+    success_msg: "{{ paperless_ocr_check.stderr_lines | default([]) | join(' | ') }}"
+    fail_msg: >-
+      {{ paperless_ocr_script }} --dry-run failed, so a real pass would too.
+      Nothing was spent finding out. It said:
+
+      {{ paperless_ocr_check.stderr_lines | default(['(no output)']) | join('
+      ') }}
+    quiet: true
+  when: paperless_ocr_verify | bool
+
+- name: Report the state this leaves the timer in
+  ansible.builtin.debug:
+    msg: >-
+      {{ paperless_ocr_running if paperless_ocr_enabled | bool
+         else paperless_ocr_idle }}
+  vars:
+    paperless_ocr_running: >-
+      {{ paperless_ocr_unit }}.timer is ENABLED, every
+      {{ paperless_ocr_on_calendar or paperless_ocr_interval }}, up to
+      {{ paperless_ocr_limit or 'every pending' }} document(s) a pass. It
+      rewrites the text and the title of every document it picks up, and
+      spends on each one -- journalctl -u {{ paperless_ocr_unit }}.service.
+    paperless_ocr_idle: >-
+      {{ paperless_ocr_unit }}.timer is installed but DISABLED, so nothing is
+      scheduled and nothing is spent. Watch one pass first -- sudo systemctl
+      start {{ paperless_ocr_unit }}.service, then journalctl -fu
+      {{ paperless_ocr_unit }}.service -- and set paperless_ocr_enabled true
+      once you like what it did.

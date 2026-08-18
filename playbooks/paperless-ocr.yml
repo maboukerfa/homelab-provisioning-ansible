@@ -1,0 +1,26 @@
+---
+# Installs the hourly job that re-OCRs paperless documents with a vision model
+# and retitles them from the transcription -- INSTALLED SWITCHED OFF.
+#
+# Separate from any stack playbook because it deploys nothing containerised: it
+# is a script and a systemd timer that talk to paperless (:8001) and the
+# LiteLLM gateway (:8006) over localhost. Deploy playbooks/litellm.yml first --
+# the models are served through that proxy.
+#
+# One manual step, once, deliberately not in git: /etc/paperless-ocr/env has to
+# hold PAPERLESS_TOKEN and LITELLM_API_KEY, or the run stops at the preflight
+# check with the two commands that create it.
+#
+# Nothing is scheduled and nothing is spent until paperless_ocr_enabled is
+# true. Watch one pass by hand before you flip it:
+#
+#   sudo systemctl start paperless-ocr.service
+#   journalctl -fu paperless-ocr.service
+
+- name: Install the paperless OCR and retitling timer
+  hosts: homelab
+  become: true
+
+  roles:
+    - role: paperless_ocr
+      tags: [paperless, ocr]

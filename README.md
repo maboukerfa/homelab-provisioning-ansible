@@ -1,9 +1,10 @@
 # homelab-ansible
 
-Ansible for the homelab. Three jobs so far: bootstrap a Debian or Ubuntu box
+Ansible for the homelab. Four jobs so far: bootstrap a Debian or Ubuntu box
 with Docker Engine, the Compose v2 plugin and an unprivileged `appuser`
-identity, deploy compose stacks from `stacks/` onto it, and put a stack's data
-directory under version control on a timer.
+identity, deploy compose stacks from `stacks/` onto it, put a stack's data
+directory under version control on a timer, and hand paperless's unprocessed
+documents to a vision model for their text and a title.
 
 Written for a **fresh host**. Everything is idempotent, so re-running it is
 cheap and boring, but two defaults assume nothing is serving traffic yet — see
@@ -23,11 +24,13 @@ playbooks/
   silverbullet.yml       deploy one stack
   silverbullet-git.yml   put that stack's data under version control
   litellm.yml            deploy the LLM gateway and its database
+  paperless-ocr.yml      OCR and retitle paperless documents, on a timer
 roles/
   docker/                install from Docker's apt repo, then verify it works
   appuser/               the service identity, uid/gid pinned
   stack/                 deploy one compose stack, with preflight checks
   git_archive/           commit a directory and push it, on a systemd timer
+  paperless_ocr/         re-OCR paperless documents and retitle them, timer off
 stacks/                  compose files, one directory per app -- see stacks/README.md
   silverbullet/
   litellm/
@@ -253,6 +256,78 @@ installs an unregistered key and then says nothing for six hours is the failure
 mode the whole role exists to remove. Turn it off with
 `git_archive_run_now: false`.
 
+## OCR and retitling paperless documents
+
+```sh
+ansible-playbook playbooks/paperless-ocr.yml
+```
+
+The `paperless_ocr` role installs `paperless-ocr.service` and its timer. One
+pass takes every document paperless holds that has not been through this
+before, renders each page with ghostscript, transcribes it with a vision model,
+and writes the text back together with a title asked of a second model from
+that transcription. Both models are reached through the LiteLLM gateway on
+`localhost:8006`, so deploy `playbooks/litellm.yml` first; paperless itself is
+`localhost:8001` and is not deployed from this repo.
+
+**The timer is installed switched off**, which no other role here does. Two
+reasons, and both are about the same thing — this is the one job in the repo
+whose mistakes cost something:
+
+- It **spends money per document**, at whatever the proxy is pointed at.
+- It **overwrites the document text in paperless**. The original file is never
+  touched, so paperless can always redo its own OCR from it, but the text it
+  had before is gone from the database.
+
+So watch a pass before putting it on a clock:
+
+```sh
+sudo /opt/paperless-ocr/paperless-ocr.py --dry-run   # what it would pick up
+sudo systemctl start paperless-ocr.service           # one pass, for real
+journalctl -fu paperless-ocr.service
+```
+
+Then set `paperless_ocr_enabled: true` in `inventory/group_vars/homelab.yml`
+and re-run the playbook. Setting it back to `false` stops and disables the
+timer again — the script and the units stay, and `systemctl start` still does a
+pass by hand.
+
+The deploy runs that `--dry-run` itself unless `paperless_ocr_verify: false`.
+It calls neither model, so it costs nothing and still proves the token, the
+key, both URLs and the marker field are right — which for a job that will first
+run for real weeks later, started by someone who did not deploy it, is the
+whole point.
+
+### The marker
+
+A boolean custom field, `ai-processed`, set to `true` only once both the text
+and the title landed. It is created on the first run if it is not there, and it
+is what makes the whole thing affordable: a pass over a paperless with nothing
+new in it is a single listing call, an interrupted pass resumes rather than
+paying for those pages twice, and a document that fails is simply picked up
+again next time instead of being skipped forever.
+
+`paperless_ocr_limit` (20) caps how many documents a single pass will do. That
+is not a cap on the backlog — an hourly timer still drains it, twenty an hour —
+but on what one unattended pass can spend the first time a bulk import lands in
+the consume directory.
+
+### The one manual step
+
+`/etc/paperless-ocr/env`, holding `PAPERLESS_TOKEN` and `LITELLM_API_KEY`.
+Like a stack's `.env` it never enters this repo, and the role refuses to
+install the timer until it exists, then chowns it to the identity the unit runs
+as and enforces `0600`. Everything else it reads — URLs, model names, DPI,
+limit — is in `/etc/paperless-ocr/config`, which Ansible writes from this repo.
+
+The split is also why the script parses those two files itself instead of
+taking an `EnvironmentFile=` on the unit: a run by hand then sees exactly what
+the timer sees, rather than the timer minus its unit file.
+
+Use a LiteLLM **virtual key** rather than the master key. What this job spends
+then shows up on its own line in the gateway's spend log, and can be revoked
+without touching anything else.
+
 ## Secrets
 
 Per-stack `.env` files live on the host and are gitignored; commit
@@ -266,7 +341,7 @@ repo.
 ## Next
 
 - Vault the per-stack secrets, so a host rebuild needs nothing typed by hand.
-  The deploy keys under `/etc/<name>/` are now on that list too.
+  The deploy keys and `/etc/paperless-ocr/env` are now on that list too.
 - Real backups. `git_archive` covers text history for one directory at a time
   and explicitly does not cover binaries. `/srv` is deliberately the only
   precious half of the filesystem convention, which makes it the whole of what

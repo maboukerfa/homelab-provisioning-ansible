@@ -1,0 +1,43 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=OCR and retitle the unprocessed paperless documents
+Documentation=file://{{ paperless_ocr_script }}
+# Both endpoints are containers on this host, so the pass needs dockerd up as
+# well as a route. Neither is a hard dependency: this is a timer job, and a
+# pass that starts too early fails, logs it, and comes round again.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Configuration is {{ paperless_ocr_conf_dir }}/config (Ansible) and
+# {{ paperless_ocr_env_file }} (credentials, by hand). The script reads both,
+# so `sudo {{ paperless_ocr_script }} --dry-run` behaves exactly like this unit.
+ExecStart={{ paperless_ocr_script }}
+
+# Owns nothing on disk. It needs to read {{ paperless_ocr_env_file }}, which the
+# role chowns to match, and to write the rasterized pages into its own private
+# /tmp -- that is the whole of its filesystem contact.
+User={{ paperless_ocr_user }}
+Group={{ paperless_ocr_group }}
+
+# ghostscript pulls in fontconfig, which wants somewhere to cache. Pointing HOME
+# at the private /tmp below gives it one that is thrown away with the run, and
+# keeps the alternative -- "No writable cache directories" in the journal on
+# every single pass -- out of the log you want to be able to read.
+Environment=HOME=/tmp
+
+# A pass is mostly waiting on two HTTP endpoints, with bursts of ghostscript
+# between them. It should never be the reason the box feels slow.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec={{ paperless_ocr_timeout }}
+
+# Nothing here writes outside its own /tmp, so it can have essentially nothing.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

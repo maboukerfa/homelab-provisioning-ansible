@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: paperless_ocr
+  namespace: homelab
+  author: maboukerfa
+  description: >-
+    Re-OCR paperless documents with a vision model and retitle them from the
+    transcription, on a systemd timer that is installed disabled.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - paperless
+    - systemd
+    - ocr
+
+# Same reasoning as the appuser, stack and git_archive roles: a dependencies:
+# entry would re-run the whole docker role every time this one deploys. It
+# needs the appuser identity to exist and asserts exactly that; the bootstrap
+# playbook establishes the host.
+dependencies: []

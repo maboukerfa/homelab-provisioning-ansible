@@ -1,0 +1,24 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=OCR and retitle new paperless documents ({{ paperless_ocr_on_calendar if paperless_ocr_on_calendar else 'every ' ~ paperless_ocr_interval }})
+
+[Timer]
+Unit={{ paperless_ocr_unit }}.service
+{% if paperless_ocr_on_calendar %}
+# Wall-clock times. Persistent so a run missed while the box was off happens
+# shortly after it comes back rather than waiting for the next slot.
+OnCalendar={{ paperless_ocr_on_calendar }}
+Persistent=true
+{% else %}
+# Monotonic: {{ paperless_ocr_interval }} after the last pass finished, which is
+# the right way round here -- passes vary from one listing call to twenty
+# documents, and what should be spaced out is the work, not its start times.
+OnBootSec={{ paperless_ocr_boot_delay }}
+OnUnitActiveSec={{ paperless_ocr_interval }}
+{% endif %}
+# Nothing else on this host wakes on the hour, but a pass starting a few minutes
+# off one is free and keeps it that way.
+RandomizedDelaySec={{ paperless_ocr_splay }}
+
+[Install]
+WantedBy=timers.target
