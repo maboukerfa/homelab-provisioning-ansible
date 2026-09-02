@@ -24,6 +24,7 @@ playbooks/
   silverbullet.yml       deploy one stack
   silverbullet-git.yml   put that stack's data under version control
   litellm.yml            deploy the LLM gateway and its database
+  dawarich.yml           deploy location history: app, worker, PostGIS, redis
   paperless-ocr.yml      OCR and retitle paperless documents, on a timer
 roles/
   docker/                install from Docker's apt repo, then verify it works
@@ -34,6 +35,7 @@ roles/
 stacks/                  compose files, one directory per app -- see stacks/README.md
   silverbullet/
   litellm/
+  dawarich/
 ```
 
 ## Requirements

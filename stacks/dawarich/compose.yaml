@@ -1,0 +1,263 @@
+services:
+  dawarich_app:
+    # 1.14.0 is
+    # sha256:f251f08d6330a9b22506c862407e53b0b4aec620a63953a446e19cd610d7d476.
+    # This host was adopted on 1.11.0 and upgraded off it here.
+    # `latest`, which the upstream compose file uses, moves on its own -- so
+    # pinning here is not housekeeping: it is what stops the next unrelated
+    # deploy from silently upgrading a service holding years of location
+    # history. An upgrade should be a line in this diff.
+    image: freikin/dawarich:1.14.0
+    container_name: dawarich_app
+    restart: unless-stopped
+    entrypoint: web-entrypoint.sh
+    command: ['bin/rails', 'server', '-p', '3000', '-b', '::']
+    environment:
+      RAILS_ENV: production
+      # PUID/PGID rather than a `user:` line, which is what the other stacks in
+      # this repo use. The entrypoint starts as root, chowns the paths it needs
+      # to write, then gosu's down to this uid -- a `user:` would start
+      # unprivileged and never get to do the chown. 2000:2000 is appuser, and
+      # is what owns /srv/dawarich on the host, so the files have one owner end
+      # to end.
+      PUID: 2000
+      PGID: 2000
+      # Service names, resolved on the compose network. Both are internal:
+      # neither the database nor redis publishes a port.
+      REDIS_URL: redis://dawarich_redis:6379
+      DATABASE_HOST: dawarich_db
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # `dawarich_development` under RAILS_ENV=production reads like a mistake
+      # and is not one: it is the upstream default, so it is the name initdb
+      # gave the cluster this host has been running since day one. Renaming a
+      # live database buys a tidier name and nothing else.
+      DATABASE_NAME: dawarich_development
+      # Rails rejects any request whose Host header is not on this list, which
+      # is why a new proxy hostname has to be added here before it works. The
+      # tailnet name is how it is normally reached; boukerfa.eu is the
+      # Cloudflare tunnel and can be dropped from this line to take the app off
+      # the public internet.
+      APPLICATION_HOSTS: homelab.bat-kochab.ts.net,localhost,::1,127.0.0.1,dawarich.bat-kochab.ts.net,dawarich.boukerfa.eu
+      # Both proxies terminate TLS themselves and speak plain HTTP to this
+      # container, which is what this describes -- it is the scheme Rails puts
+      # in the URLs it generates, not the scheme it is served over.
+      APPLICATION_PROTOCOL: http
+      # The timezone points are bucketed into for daily stats. Changing it
+      # moves every day boundary in the history already recorded, so it is left
+      # at what this instance was populated with rather than corrected to
+      # local time.
+      TIME_ZONE: Europe/London
+      # Signs the session cookie. The upstream compose file defaults this to
+      # the literal string CHANGE_ME, which means anyone who has read that file
+      # can mint a valid session for any account -- required here, with no
+      # default, so the stack refuses to start rather than come up forgeable.
+      #
+      # It is also what the ActiveRecord encryption keys are derived from when
+      # OTP_ENCRYPTION_* are unset, so rotating it invalidates any 2FA
+      # enrolment along with every session. Nobody had 2FA on when this was
+      # pinned; set the OTP_ENCRYPTION_* trio explicitly before that changes.
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
+      RAILS_LOG_TO_STDOUT: true
+      SELF_HOSTED: true
+      # Caches reverse-geocoding results in the database instead of asking the
+      # geocoder again for a place already visited.
+      STORE_GEODATA: true
+      # One preloaded Puma worker is plenty for a household instance and halves
+      # idle memory. Raise for busier instances.
+      WEB_CONCURRENCY: 1
+    ports:
+      # Published on 8005 on every interface. Both proxies reach it over
+      # loopback, so `127.0.0.1:8005:3000` would serve them fine -- it is left
+      # open because a phone posting locations straight to the LAN address
+      # would stop working, silently, and not be noticed for a week.
+      - '8005:3000'
+    volumes:
+      - /srv/dawarich/public:/var/app/public
+      - /srv/dawarich/storage:/var/app/storage
+      # Drop a .gpx/.json export in here and it is imported without touching
+      # the UI. Empty on this host; kept because it costs a directory.
+      - /srv/dawarich/watched:/var/app/tmp/imports/watched
+      # The upstream file also mounts the Postgres data volume in here, at
+      # /dawarich_db_data, read-write. Nothing in the application reads that
+      # path -- it is deliberately absent rather than carried over: a web app
+      # that can rewrite the database's own files is one bug away from a very
+      # bad afternoon.
+    depends_on:
+      dawarich_db:
+        condition: service_healthy
+        restart: true
+      dawarich_redis:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO - http://127.0.0.1:3000/api/v1/health | grep -q '\"status\"\\s*:\\s*\"ok\"'" ]
+      interval: 10s
+      retries: 30
+      start_period: 30s
+      timeout: 10s
+    # Not `cap_drop: ALL` alone, unlike the rest of this repo: the entrypoint
+    # is root until it has chowned /var/app/{db,log} and re-executed as 2000,
+    # and stripping these four turns that into a crash loop. Everything after
+    # the gosu runs with no capabilities at all, which is where it matters.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 4G
+
+  dawarich_sidekiq:
+    # Same image as the web container -- a different entrypoint is the whole
+    # difference. Pinning them apart would put the worker and the app on
+    # different versions of the same schema.
+    image: freikin/dawarich:1.14.0
+    container_name: dawarich_sidekiq
+    restart: unless-stopped
+    entrypoint: sidekiq-entrypoint.sh
+    command: ['sidekiq']
+    environment:
+      RAILS_ENV: production
+      PUID: 2000
+      PGID: 2000
+      REDIS_URL: redis://dawarich_redis:6379
+      DATABASE_HOST: dawarich_db
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DATABASE_NAME: dawarich_development
+      APPLICATION_HOSTS: homelab.bat-kochab.ts.net,localhost,::1,127.0.0.1,dawarich.bat-kochab.ts.net,dawarich.boukerfa.eu
+      APPLICATION_PROTOCOL: http
+      TIME_ZONE: Europe/London
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
+      RAILS_LOG_TO_STDOUT: true
+      SELF_HOSTED: true
+      STORE_GEODATA: true
+      # 3 job threads keep idle memory and database connections low. Raise it
+      # temporarily for a large import, then put it back.
+      BACKGROUND_PROCESSING_CONCURRENCY: 3
+    volumes:
+      # The same three the web container has: imports arrive through one and
+      # are processed by the other.
+      - /srv/dawarich/public:/var/app/public
+      - /srv/dawarich/storage:/var/app/storage
+      - /srv/dawarich/watched:/var/app/tmp/imports/watched
+    depends_on:
+      dawarich_db:
+        condition: service_healthy
+        restart: true
+      dawarich_redis:
+        condition: service_healthy
+        restart: true
+      dawarich_app:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: [ "CMD-SHELL", "pgrep -f sidekiq" ]
+      interval: 10s
+      retries: 30
+      start_period: 30s
+      timeout: 10s
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+
+  dawarich_db:
+    # PostGIS, not plain Postgres: the schema uses geometry columns and a
+    # spatial index, so this is not an interchangeable image. 17-3.5-alpine is
+    # sha256:61cb994f576480f5736974e5c9aff965d039d965301bcaec9c7ea72f94b61908
+    #
+    # The major is the part that matters. Minor upgrades inside 17.x start on
+    # the existing data directory; a jump to 18 needs pg_upgrade and refuses to
+    # start until it gets it. Bump the minor freely, treat the major as a
+    # migration -- and note the PostGIS version is a second major to keep an
+    # eye on.
+    image: postgis/postgis:17-3.5-alpine
+    container_name: dawarich_db
+    restart: unless-stopped
+    # appuser, the same identity every other container in this homelab runs as
+    # -- including LiteLLM's Postgres, and for the reasons written up at length
+    # in stacks/litellm/README.md. The short version: the image's own uid is
+    # 999, which on this Debian host already belongs to `caddy`, and initdb is
+    # the only part that needs a passwd entry -- the entrypoint fabricates one
+    # with libnss_wrapper, which this alpine image ships.
+    user: "2000:2000"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: dawarich_development
+      # Read at initdb time only. The cluster on this host already exists, so
+      # changing this line does NOT change the password it expects -- see the
+      # README before you try. It is kept in step with .env so that a restore
+      # into an empty /srv comes up consistent.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - /srv/dawarich/postgres:/var/lib/postgresql/data
+      # The upstream file also mounts the redis volume in here at /var/shared.
+      # It holds redis's dump.rdb and nothing else, and no part of Postgres or
+      # of Dawarich reads it, so it is dropped rather than carried over.
+    # PostGIS query plans sort in shared memory, and the 64MB default is small
+    # enough that a track-heavy month spills to disk.
+    shm_size: 1G
+    healthcheck:
+      # Over TCP deliberately. During initdb the server listens on the unix
+      # socket only, so a socket-based pg_isready reports "accepting
+      # connections" while the database is still being created -- the app then
+      # starts, fails, and restarts. Forcing TCP means healthy here is the same
+      # event the app is actually waiting for.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d dawarich_development"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    # Nothing here needs elevated privileges: the uid is pinned above, so the
+    # entrypoint never has to chown the data directory or setuid away from
+    # root, and 5432 is above the privileged range.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  dawarich_redis:
+    # 7.4-alpine is sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    image: redis:7.4-alpine
+    container_name: dawarich_redis
+    restart: unless-stopped
+    # Sidekiq's queue lives here, so this is not a pure cache: an empty redis
+    # means the jobs that were waiting are gone. RDB snapshots at the default
+    # cadence, no AOF -- losing the last few minutes of a queue is survivable,
+    # losing the whole queue on every host reboot is not.
+    command: >
+      redis-server
+      --save 900 1
+      --save 300 10
+      --appendonly no
+    user: "2000:2000"
+    volumes:
+      # /srv/dawarich/redis on the host, not the shared volume the upstream
+      # file mounts into two containers under two different names.
+      - /srv/dawarich/redis:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

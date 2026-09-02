@@ -1,0 +1,66 @@
+---
+# Deploys stacks/dawarich/compose.yaml to /opt/dawarich and brings it up: the
+# Rails web app, its Sidekiq worker, a PostGIS database and a redis.
+#
+# All four run as appuser (2000:2000) and keep everything they own under
+# /srv/dawarich. That is not how the upstream compose file is written -- it
+# runs as root out of five docker named volumes -- so a host already running
+# the upstream layout needs the one-off migration in stacks/dawarich/README.md
+# before this playbook is any use. Running it against the old layout starts a
+# second, empty instance on top of the same port.
+#
+# One manual step, once: /opt/dawarich/.env has to hold SECRET_KEY_BASE and
+# POSTGRES_PASSWORD, or the run stops at the preflight check.
+
+- name: Deploy Dawarich
+  hosts: homelab
+  become: true
+
+  pre_tasks:
+    # Created explicitly rather than left to the role, for the same reason as
+    # in playbooks/litellm.yml: Ansible's file module is mkdir -p and stamps
+    # the owner, group and mode it was given onto every intermediate directory
+    # it has to create, so an implicit parent would inherit the database
+    # directory's 0700 by accident rather than by decision.
+    - name: Ensure the stack's data root exists
+      ansible.builtin.file:
+        path: /srv/dawarich
+        state: directory
+        owner: "{{ appuser_uid | default(2000) }}"
+        group: "{{ appuser_gid | default(2000) }}"
+        mode: "0750"
+      tags: [dawarich]
+
+    # Split out of stack_data_dirs because Postgres checks the mode itself and
+    # refuses to start on anything more permissive, and because nothing else
+    # has any business inside a database's data directory anyway.
+    - name: Ensure the database directory exists, 0700
+      ansible.builtin.file:
+        path: /srv/dawarich/postgres
+        state: directory
+        owner: "{{ appuser_uid | default(2000) }}"
+        group: "{{ appuser_gid | default(2000) }}"
+        mode: "0700"
+      tags: [dawarich]
+
+    # The upstream file this stack replaces. Left in place it is a live
+    # footgun: `docker compose -f docker-compose.yml up` in that directory
+    # starts a second copy of every container, as root, against the old named
+    # volumes, on a port that is already taken. Back it up before the first run
+    # if you want the rollback path -- see the README.
+    - name: Remove the pre-Ansible compose file
+      ansible.builtin.file:
+        path: /opt/dawarich/docker-compose.yml
+        state: absent
+      tags: [dawarich]
+
+  roles:
+    - role: stack
+      tags: [dawarich]
+      vars:
+        stack_name: dawarich
+        stack_data_dirs:
+          - /srv/dawarich/public
+          - /srv/dawarich/storage
+          - /srv/dawarich/watched
+          - /srv/dawarich/redis
