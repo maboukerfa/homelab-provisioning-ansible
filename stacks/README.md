@@ -56,3 +56,7 @@ user: "2000:2000"
 Whichever you use, `/srv/<name>/` has to be owned by the same ids or the
 container comes up unable to write, which looks like a working service right up
 until the first save.
+
+`immich` is the exception, and an adoption rather than a decision: it runs as
+root, the way it was installed, because moving 34G of photos and a Postgres
+cluster onto appuser is its own commit. See `stacks/immich/README.md`.

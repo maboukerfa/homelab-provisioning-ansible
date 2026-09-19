@@ -1,0 +1,147 @@
+---
+# Deploys stacks/immich/compose.yaml to /opt/immich and brings it up: the
+# server, the machine-learning container, a VectorChord Postgres and a valkey.
+#
+# This is an adoption, not an install. Immich has been running on this host
+# since July 2026 from /opt/immich-app/docker-compose.yml, and the point of
+# moving it here is the image tag: that file pins nothing -- it reads
+# ${IMMICH_VERSION} from .env, which was `v3`, a tag that pointed at v3.0.3
+# when it was pulled and points at v3.2.2 today. One `docker compose pull` and
+# a household photo archive takes an upgrade and its schema migrations by
+# accident. stacks/immich/compose.yaml pins v3.0.3, the version already
+# running, so this deploy changes the tag and not the bits behind it.
+#
+# The containers keep running as root and the data stays exactly where it is.
+# Moving Immich to appuser (2000:2000) like every other stack here means a
+# recursive chown of 34G of photos and a Postgres cluster owned by uid 999 --
+# worth doing, and worth doing as its own commit. See stacks/immich/README.md.
+#
+# No manual step on this host: the database password is carried over from
+# /opt/immich-app/.env below. A restore onto an empty host needs that file
+# placed by hand -- see stacks/immich/.env.example.
+
+- name: Deploy Immich
+  hosts: homelab
+  become: true
+
+  pre_tasks:
+    # The library is not on the root filesystem -- it is a 246G LVM volume
+    # mounted at /srv/immich-images. If that mount is not there, the bind
+    # source is an empty directory on the root disk instead, and Immich starts
+    # with a library that has lost every photo and begins refilling 200G of
+    # space that does not exist. Nothing downstream would catch it: the
+    # containers come up healthy and the API answers.
+    - name: Check the photo volume is mounted
+      ansible.builtin.assert:
+        that:
+          - ansible_mounts | selectattr('mount', 'equalto', '/srv/immich-images')
+            | list | length > 0
+        fail_msg: >-
+          /srv/immich-images is not a mount point, so /srv/immich-images/images
+          is an empty directory on the root disk rather than the photo library.
+          Deploying now would start Immich on an empty library and fill /.
+          Mount it (`mount /srv/immich-images`, it is in /etc/fstab) and find
+          out why it was not mounted before deploying.
+        quiet: true
+      tags: [immich]
+
+    # Same class of failure on the database side, and the louder one: Postgres
+    # initdb's a brand new cluster when its data directory is empty, so Immich
+    # would come up as a fresh install -- no users, no albums, no faces --
+    # sitting on top of 34G of photos it no longer has any rows for.
+    - name: Check the database cluster is where it should be
+      ansible.builtin.stat:
+        path: /srv/immich/postgres/PG_VERSION
+      register: immich_pgdata_stat
+      tags: [immich]
+
+    - name: Assert the database cluster is where it should be
+      ansible.builtin.assert:
+        that:
+          - immich_pgdata_stat.stat.exists
+        fail_msg: >-
+          /srv/immich/postgres holds no PG_VERSION, so it is not a Postgres
+          data directory. Starting the stack would initdb an empty cluster and
+          give you a factory-fresh Immich over the existing library. Restore
+          the cluster, or point the bind mount at wherever it went, first.
+        quiet: true
+      tags: [immich]
+
+    # Created here rather than left to the role, so the secret below has
+    # somewhere to land. Same owner and mode the role would use.
+    - name: Ensure the stack directory exists
+      ansible.builtin.file:
+        path: /opt/immich
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [immich]
+
+    - name: Check the pre-Ansible env file is still there
+      ansible.builtin.stat:
+        path: /opt/immich-app/.env
+      register: immich_old_env_stat
+      tags: [immich]
+
+    # A one-time copy, and the only reason this repo touches a secret at all:
+    # the password is already on the host, it is the one the existing cluster
+    # authenticates with, and asking for it to be retyped into a second file is
+    # how a 34G stack stays down over a typo. `force: false` means every later
+    # run leaves the file completely alone -- it is never read, diffed or
+    # rewritten, exactly like every other stack's .env.
+    - name: Carry the database password over from the pre-Ansible install
+      ansible.builtin.copy:
+        src: /opt/immich-app/.env
+        dest: /opt/immich/.env
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0640"
+        force: false
+      when: immich_old_env_stat.stat.exists
+      tags: [immich]
+
+  roles:
+    - role: stack
+      tags: [immich]
+      vars:
+        stack_name: immich
+
+        # Empty, unlike every other stack here, and the asserts above are why.
+        # Both bind sources already exist and hold data: /srv/immich-images/images
+        # is owned by the admin login and /srv/immich/postgres by uid 999, two
+        # owners the role could not express in one list and neither of which is
+        # appuser. Nothing here is protected by creating a directory that is
+        # already there -- what protects this stack is refusing to start when
+        # the mount or the cluster is missing.
+        stack_data_dirs: []
+
+  post_tasks:
+    # Removed after the deploy, not before: while it exists it is the rollback
+    # path, and if the run above fails it is still the file describing what is
+    # running. Once the stack is up from /opt/immich it is purely a footgun --
+    # `cd /opt/immich-app && docker compose up -d` would pull whatever `v3`
+    # means this week, over the top of this stack, migrations and all.
+    - name: Remove the pre-Ansible compose file
+      ansible.builtin.file:
+        path: /opt/immich-app/docker-compose.yml
+        state: absent
+      tags: [immich]
+
+    # The nightly restic job (/opt/backup/immich-backup.sh, a systemd timer
+    # this repo does not manage) backs up $IMMICH_APP_DIR, defaulting to
+    # /opt/immich-app. It still resolves -- .env is deliberately left there --
+    # but it now saves a stale copy of a file this repo owns, and it is one
+    # line in /etc/backup/restic.env away from being right. Reported rather
+    # than fixed: that file holds the restic credentials, and this repo does
+    # not rewrite secrets it did not write.
+    - name: Report the backup job still points at the old directory
+      ansible.builtin.debug:
+        msg: >-
+          /opt/immich-app/.env is still in place and the restic job still backs
+          that directory up. To finish: add IMMICH_APP_DIR=/opt/immich to
+          /etc/backup/restic.env, confirm the next run is green, then
+          `rm -rf /opt/immich-app`.
+      when: immich_old_env_stat.stat.exists
+      tags: [immich]

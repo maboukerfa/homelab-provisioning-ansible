@@ -1,0 +1,142 @@
+# Adopted from the install this host has been running since July 2026, not
+# written from scratch. The shape is still upstream's
+# (https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml)
+# `database` and `redis` are unchanged from it, so what this file actually
+# alters is the server and the model runner. What is deliberately NOT upstream
+# is written up in stacks/immich/README.md.
+
+services:
+  immich-server:
+    # v3.0.3 is
+    # sha256:c716dc20f957aafd89fa9d284a2ec63e25c9e2d8d8e87c6197d540a3dce237db
+    # -- the exact bits this host is already running.
+    #
+    # Upstream reads the tag from ${IMMICH_VERSION} in .env, which on this host
+    # was `v3`. That tag moves: it pointed at v3.0.3 when it was pulled and
+    # points at v3.2.2 today, so the next `docker compose pull` here was two
+    # minor versions and a batch of schema migrations nobody asked for.
+    # Immich migrates the database on start and does not migrate back.
+    #
+    # Upgrading is now a line in this diff: read the release notes, bump both
+    # immich tags together, deploy. Server and machine-learning must move as
+    # one -- they share an API contract, not just a version number.
+    image: ghcr.io/immich-app/immich-server:v3.0.3
+    container_name: immich_server
+    # `always`, like the rest of this file and unlike every other stack here.
+    # Adoption fidelity: the point of this file is to change who deploys
+    # Immich, not how it runs. Switch the four to `unless-stopped` in one
+    # deliberate commit if you want the repo-wide convention.
+    restart: always
+    environment:
+      # Immich's own defaults for all four, stated anyway: they are the
+      # coupling to the service names below, and the thing you have to change
+      # if a service is ever renamed.
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: redis
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+
+      # Where the library lives *inside* the container, and the default. It is
+      # spelled out because the absolute paths of every asset are rows in the
+      # database: change this and Immich stops finding files it still lists.
+      # `immich-admin media-location` is the supported way to move it.
+      IMMICH_MEDIA_LOCATION: /data
+
+      # Upstream hands this container the whole .env with `env_file:`, which is
+      # how a stack ends up passing its database password to a model runner
+      # that has no database. Dropped here -- everything Immich reads is above.
+    volumes:
+      # The library: originals, thumbs, transcodes, profile images and Immich's
+      # own nightly database dumps. 34G, on its own LVM volume mounted at
+      # /srv/immich-images -- playbooks/immich.yml refuses to deploy if that
+      # mount is missing, because an unmounted path here is an empty library on
+      # the root disk and Immich would happily start filling it.
+      - /srv/immich-images/images:/data
+      # Timestamps in logs and in the UI's "uploaded at". The container has no
+      # TZ set, so without this it is UTC.
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      # Every interface, not loopback. `tailscale serve` reaches it on
+      # localhost and would be happy either way -- it is open because the
+      # mobile apps upload straight to the LAN address, and that failing
+      # silently while the tailnet name still worked would not be noticed for
+      # a week.
+      - '2283:2283'
+    depends_on:
+      - redis
+      - database
+    healthcheck:
+      # `disable: false` keeps the image's own healthcheck (immich-healthcheck)
+      # rather than replacing it. Upstream's line, kept.
+      disable: false
+    # No cap_drop, unlike every other stack in this repo. This container runs
+    # as root -- Immich's supported configuration -- over a bind mount whose
+    # directories belong to three different uids, so it is DAC_OVERRIDE that
+    # lets it write there at all. Dropping capabilities under a root uid is
+    # theatre; the real fix is running as appuser, which is a migration and a
+    # separate commit. See the README.
+
+  immich-machine-learning:
+    # Same release as the server, and not optional: the two speak a versioned
+    # API and a mismatch shows up as search and face detection quietly failing.
+    # v3.0.3 is
+    # sha256:d76fe88b69282c09a97eac4f82dafa82cfd77bce274bc742591cde974f87dacb
+    #
+    # For hardware acceleration the tag takes a suffix -- v3.0.3-cuda, -openvino,
+    # -armnn, -rocm, -rknn -- plus the hwaccel.ml.yml overlay. This host has no
+    # GPU, so it runs CPU inference.
+    image: ghcr.io/immich-app/immich-machine-learning:v3.0.3
+    container_name: immich_machine_learning
+    restart: always
+    volumes:
+      # A named volume, not a bind mount under /srv, and on purpose: these are
+      # ~2GB of CLIP and face-recognition weights that re-download on demand.
+      # /srv is for what cannot be recreated, and this can.
+      - model-cache:/cache
+    healthcheck:
+      disable: false
+    # No environment block at all. Every MACHINE_LEARNING_* knob is defaulted,
+    # and the only thing upstream's `env_file: .env` actually delivered here
+    # was the database password.
+
+  redis:
+    # Pinned by digest upstream, kept exactly as pulled. Immich uses it for the
+    # job queue, and an empty queue after a restart means pending thumbnail and
+    # ML jobs are re-derived from the database rather than lost -- which is why
+    # this one gets no volume and no backup.
+    container_name: immich_redis
+    image: docker.io/valkey/valkey:9@sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
+    healthcheck:
+      test: redis-cli ping || exit 1
+    restart: always
+
+  database:
+    # Not interchangeable with the stock postgres image: it carries VectorChord
+    # and pgvecto.rs, which is what smart search and face clustering query. The
+    # major (14) and both extension versions are part of the on-disk format --
+    # treat a change to any of them as a migration, and read Immich's release
+    # notes, which tell you when one is required.
+    container_name: immich_postgres
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      # Upstream reads these three from .env. Only the password is a secret, so
+      # only the password stays there; the other two are configuration and
+      # belong in the file you can read without sudo. The values are what the
+      # existing cluster was initialised with -- they are not free to change.
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      # On the root filesystem, not the photo volume. A live PG data directory
+      # is not a backup artifact -- what the restic job saves is the nightly
+      # dump Immich writes into /data/backups.
+      - /srv/immich/postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    restart: always
+    healthcheck:
+      disable: false
+
+volumes:
+  model-cache:
