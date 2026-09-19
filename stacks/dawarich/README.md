@@ -10,7 +10,7 @@ phone app and by Google Takeout imports. Deployed with
 | Data | `/srv/dawarich/{postgres,public,storage,watched,redis}` (uid 2000 / appuser) |
 | Published on | `http://<host>:8005/`, `https://dawarich.bat-kochab.ts.net` on the tailnet |
 | Secrets | `/opt/dawarich/.env` — two, both generated, see `.env.example` |
-| Backups | `pg_dump`, **not** `git_archive` — see [Backups](#backups) |
+| Backups | `pg_dump`, **not** git — see [Backups](#backups) |
 
 Four containers: the Rails app, a Sidekiq worker that does the imports and the
 reverse geocoding, a PostGIS database, and a redis holding the job queue.
@@ -266,9 +266,9 @@ again; nothing stored depends on it while no account has 2FA.
 
 ## Backups
 
-**Do not point `git_archive` at `/srv/dawarich`.** That role commits a
-directory as it finds it, which for a live database means a torn snapshot, in a
-tree git stores badly and cannot meaningfully diff. `/srv/dawarich/postgres` is
+**Do not put `/srv/dawarich` under git.** Committing a directory as you find
+it means, for a live database, a torn snapshot — in a tree git stores badly and
+cannot meaningfully diff. `/srv/dawarich/postgres` is
 also the bulk of the stack.
 
 The database is a dump:

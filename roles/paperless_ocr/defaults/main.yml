@@ -95,9 +95,9 @@ paperless_ocr_timeout: 1h
 # ---------------------------------------------------------------------------
 # Run the script's --dry-run at the end of the play: it lists what a real pass
 # would pick up and sends nothing to either model. This is the cheap half of
-# what git_archive's run-now does -- it proves the token, the key, the URL and
-# the marker field are all right while somebody is watching, without spending
-# anything to find out.
+# running the job for real at deploy time -- it proves the token, the key, the
+# URL and the marker field are all right while somebody is watching, without
+# spending anything to find out.
 paperless_ocr_verify: true
 
 # THE TIMER IS OFF BY DEFAULT, and this is the switch.

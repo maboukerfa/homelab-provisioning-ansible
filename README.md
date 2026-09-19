@@ -18,11 +18,10 @@ requirements.yml         galaxy collections (installed into ./collections, gitig
 Makefile                 make ping / check / bootstrap / stack / lint
 inventory/
   hosts.yml              the machines
-  group_vars/all.yml     ansible_user, filesystem convention, archive remotes
+  group_vars/all.yml     ansible_user, filesystem convention
 playbooks/
   bootstrap.yml          python3 -> docker -> appuser
   silverbullet.yml       deploy one stack
-  silverbullet-git.yml   put that stack's data under version control
   litellm.yml            deploy the LLM gateway and its database
   dawarich.yml           deploy location history: app, worker, PostGIS, redis
   paperless-ocr.yml      OCR and retitle paperless documents, on a timer
@@ -30,7 +29,6 @@ roles/
   docker/                install from Docker's apt repo, then verify it works
   appuser/               the service identity, uid/gid pinned
   stack/                 deploy one compose stack, with preflight checks
-  git_archive/           commit a directory and push it, on a systemd timer
   paperless_ocr/         re-OCR paperless documents and retitle them, timer off
 stacks/                  compose files, one directory per app -- see stacks/README.md
   silverbullet/
@@ -199,65 +197,6 @@ Adding a stack is a directory under `stacks/` and a playbook that names it plus
 its data directories; `playbooks/silverbullet.yml` is nine lines and is the
 template.
 
-## Archiving a data directory to git
-
-```sh
-ansible-playbook playbooks/silverbullet-git.yml
-```
-
-The `git_archive` role installs `<name>-git.service` and `<name>-git.timer`,
-which every six hours commit whatever changed under a directory and push it to
-a private repo over SSH. One invocation is one archived directory; a second
-stack is a second invocation with a different `git_archive_name`.
-
-It is **one-way**, host to remote, and that is not an oversight. The subject is
-an application's live data directory, and applications keep their own index of
-it rather than watching for files that appear underneath them — SilverBullet is
-the case this was written for. Commits pulled back down would leave that index
-lying about the contents until someone reindexed by hand. The remote is an
-archive, not a second place to edit from.
-
-It is also **not a backup tool**. Binary attachments live in these trees too and
-git stores them badly. This buys per-edit history for text and an offsite copy;
-restic or equivalent is still what you restore from.
-
-Three guards run before anything is staged, because all three failures are
-expensive after the fact and cheap before it:
-
-- **Quiet period.** A file written in the last 30 seconds may still be
-  mid-write, so the whole pass is skipped. Nothing is lost — it is six hours to
-  the next one, and half a file in a commit is worse than a late commit.
-- **Secrets.** `git_archive_secrets` names files that must never be committed.
-  If one exists and is neither ignored nor untracked, the run stops. `.gitignore`
-  is already supposed to cover it; once a credential is pushed it is leaked
-  whatever you do to the history afterwards, so this is worth checking twice.
-- **Blob size.** GitHub hard-rejects anything over 100MB, and a rejected push
-  blocks every later commit until the offender is rewritten out of history.
-
-The credential is a **deploy key**, generated on the host and never in this
-repo — scoped to one repository, where a token would hand the homelab write
-access to every repo on the account. The role refuses to install the timer
-until the key is in place, chowns it to the archiving identity and enforces
-`0600`.
-
-Host keys are **pinned in `roles/git_archive/defaults/main.yml`**, not
-keyscanned on the host, so the trusted value lives in git and a change shows up
-in a diff. This matters more than it looks: the script runs as `appuser`, which
-has no shell and no `~/.ssh`, so the usual `ssh-keyscan >> ~/.ssh/known_hosts`
-pins the key for your admin account and does nothing at all for the timer.
-
-`User=` must match the owner of the archived directory, which is the uid the
-container runs as. The script runs `git add`, `git commit` and `git gc`, all of
-which write inside that tree's `.git`; wrong uid and it fails every six hours
-into a journal nobody is reading. The role takes both from `appuser` by default
-so there is nothing to keep in step by hand.
-
-By default the unit is run once at the end of the play and its journal reported.
-`Type=oneshot`, so that blocks and returns the real exit status — a deploy that
-installs an unregistered key and then says nothing for six hours is the failure
-mode the whole role exists to remove. Turn it off with
-`git_archive_run_now: false`.
-
 ## OCR and retitling paperless documents
 
 ```sh
@@ -343,8 +282,8 @@ repo.
 ## Next
 
 - Vault the per-stack secrets, so a host rebuild needs nothing typed by hand.
-  The deploy keys and `/etc/paperless-ocr/env` are now on that list too.
-- Real backups. `git_archive` covers text history for one directory at a time
-  and explicitly does not cover binaries. `/srv` is deliberately the only
-  precious half of the filesystem convention, which makes it the whole of what
-  a restic role has to cover.
+  `/etc/paperless-ocr/env` is now on that list too.
+- Real backups. SilverBullet pushes its own text history and nothing else here
+  is backed up at all. `/srv` is deliberately the only precious half of the
+  filesystem convention, which makes it the whole of what a restic role has to
+  cover.

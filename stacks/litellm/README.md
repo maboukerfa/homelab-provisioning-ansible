@@ -10,7 +10,7 @@ keys and per-key spend tracking. Deployed with
 | Data | `/srv/litellm/postgres` (bind mount, uid 2000 / appuser) |
 | Published on | `http://<host>:8006/`, UI at `http://<host>:8006/ui` |
 | Secrets | `/opt/litellm/.env` — three of them, see `.env.example` |
-| Backups | `pg_dump`, **not** `git_archive` — see [Backups](#backups) |
+| Backups | `pg_dump`, **not** git — see [Backups](#backups) |
 
 Two containers: the gateway, and a Postgres holding models, virtual keys and
 spend logs. `STORE_MODEL_IN_DB` is on, so there is no `config.yaml` — models
@@ -155,11 +155,11 @@ issued keep working; they are rows in the database, not derivations of it.
 
 ## Backups
 
-**Do not point `git_archive` at `/srv/litellm/postgres`.** That role commits a
-directory as it finds it, which for a live database means a torn snapshot: page
-files copied mid-write, in a tree git stores badly and cannot meaningfully diff.
-The quiet-period check does not help — Postgres writes whenever it feels like
-it, not when you are looking.
+**Do not put `/srv/litellm/postgres` under git.** Committing a directory as
+you find it means, for a live database, a torn snapshot: page files copied
+mid-write, in a tree git stores badly and cannot meaningfully diff. Waiting for
+a quiet moment does not help — Postgres writes whenever it feels like it, not
+when you are looking.
 
 The right tool is a dump, which is consistent by definition:
 

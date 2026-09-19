@@ -22,7 +22,7 @@ stack_require_env_file: true
 # Directories this stack bind-mounts, created and chowned before it starts:
 #
 #   stack_data_dirs:
-#     - /srv/space
+#     - /srv/silverbullet
 #
 # Creating them is the point. Docker creates a missing bind-mount source itself,
 # as root:root -- and combined with a pinned `user:` the container then starts,

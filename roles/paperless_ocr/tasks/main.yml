@@ -139,9 +139,9 @@
 # ---------------------------------------------------------------------------
 # --dry-run lists what a real pass would pick up and calls neither model, so
 # this checks the token, the key, both URLs and the marker field for free. It
-# is the affordable half of what git_archive's run-now does, and the half that
-# matters for a job installed switched off: the first real pass will be run by
-# somebody weeks from now who did not deploy it.
+# is the affordable half of running the job for real at deploy time, and the
+# half that matters for a job installed switched off: the first real pass will
+# be run by somebody weeks from now who did not deploy it.
 - name: Check the script can reach paperless with what it was given
   ansible.builtin.command:
     cmd: "{{ paperless_ocr_script }} --dry-run"

@@ -9,7 +9,6 @@ stacks/
     compose.yaml     # committed
     .env.example     # committed -- documents the required keys, holds no values
     README.md        # optional: why this stack is configured the way it is
-    space.gitignore  # optional: deployed into the data dir by roles/git_archive
 ```
 
 `compose.yaml` is the name the Compose spec settled on. Docker still picks up
@@ -41,7 +40,7 @@ rather than starting up half-configured:
 
 ```yaml
 environment:
-  SB_USER: ${SB_USER:?set SB_USER in .env as user:password}
+  LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env, sk- prefixed}
 ```
 
 ## Running as appuser

@@ -6,40 +6,94 @@ Personal notes, served over HTTP. Deployed with
 | | |
 |---|---|
 | Host path | `/opt/silverbullet/` (compose file, root-owned) |
-| Data | `/srv/space` (bind mount, uid 2000 / appuser) |
+| Data | `/srv/silverbullet/` (bind mount, uid 2000 / appuser) — server root |
+| Notes | `/srv/silverbullet/spaces/notes/` — the space itself |
 | Published on | `http://<host>:8002/` |
-| Secrets | `/opt/silverbullet/.env` — `SB_USER` and `SB_AUTH_TOKEN`, see `.env.example` |
-| Archived | `/srv/space` to a private git repo every 6h — see [Archiving the space](#archiving-the-space) |
+| Secrets | `/srv/silverbullet/users.json`, written by `silverbullet setup` — no `.env` |
+| Archived | SilverBullet's own git sync, to a private repo — see [Revisions and git sync](#revisions-and-git-sync) |
+
+This runs SilverBullet in **multi-space** mode: one server hosting any number
+of spaces, configured through a web dashboard rather than through environment
+variables. There is exactly one space, `Notes`, bound to `/` — so from a
+browser it behaves like an ordinary single-user notes server. Why that shape
+and not the simpler one SilverBullet still offers:
+[Why multi-space, with one space](#why-multi-space-with-one-space).
+
+```
+/srv/silverbullet/            the server root, mounted at /data
+  users.json                  accounts: argon2 hashes, admin flag, API tokens
+  spaces.json                 the space registry, rewritten by the dashboard
+  server.json
+  git-keys/                   per-space deploy keys for git sync
+  .silverbullet.session.json  JWT signing secret
+  spaces/
+    notes/                    the space: a flat tree of markdown
+      .git/                   SilverBullet's own, committed and pushed by it
+```
+
+Credentials live in the server root, notes one directory below it. That split
+is what keeps the deploy key and the admin's password hash out of the
+repository SilverBullet pushes: it only ever commits inside `spaces/notes`.
 
 ## Setup
 
-The playbook creates and chowns `/srv/space` itself, so the only manual step is
-the two secrets — deliberately not in git. On the host:
+The admin account is the one manual step, deliberately not in git. The playbook
+refuses to deploy without it, because a server root with no `users.json` boots
+into the setup wizard: an unauthenticated *create the first administrator* form
+on port 8002, where whoever loads it first owns the server.
+
+Replacing an instance rather than building the first one? Clear the old state
+first — `sudo rm -rf /srv/silverbullet` — and empty the repo at the forge, or
+delete and recreate it. Everything below assumes both are clean: a leftover
+`users.json` makes `setup` refuse to run, and a repo with unrelated history
+rejects the first push.
+
+On the host:
 
 ```sh
 sudo install -d -o root -g root -m 0755 /opt/silverbullet
+sudo install -d -o 2000 -g 2000 -m 0750 /srv/silverbullet
 
 read -rsp 'SilverBullet password: ' SBPW && echo
-printf 'SB_USER=silverbullet:%s\nSB_AUTH_TOKEN=%s\n' "$SBPW" "$(openssl rand -hex 32)" \
-    | sudo install -o root -g root -m 0640 /dev/stdin /opt/silverbullet/.env
+sudo docker run --rm -u 2000:2000 -v /srv/silverbullet:/data \
+    --entrypoint /silverbullet zefhemel/silverbullet:2.11.0-slim \
+    setup /data --admin "silverbullet:$SBPW" \
+    --space Notes --space-folder spaces/notes
 unset SBPW
 ```
 
 Then from this repo: `ansible-playbook playbooks/silverbullet.yml`.
 
+`setup` is the scriptable twin of the web wizard, and the reason to prefer it
+is `--space-folder`: the wizard does not ask where a space lives and always
+picks `spaces/<uuid>`. A name you can type is worth one command. `--at`
+defaults to `/`, so the space is bound to the server root and
+`http://<host>:8002/` opens the notes rather than the dashboard.
+
+It writes `users.json`, `spaces.json` and `server.json`, creates
+`spaces/notes`, and seeds an index page into it. Revisions come out
+**managed**, which is what this stack wants — see
+[Revisions and git sync](#revisions-and-git-sync).
+
 `read -rsp` rather than typing the password as an argument keeps it out of your
-shell history.
+shell history — though not out of this container's argv, which is visible to
+root on the host for the second the command runs. Acceptable for a one-time
+bootstrap on a box you already own; it is the same trade the upstream wizard
+makes over HTTP.
 
-Both values are required — compose refuses to start without either, rather than
-coming up with authentication half-configured. They do different jobs:
+`--entrypoint /silverbullet` bypasses the image's entrypoint, which exists to
+resolve the data folder and drop privileges. Neither is wanted here: the folder
+is given explicitly and `-u` already pins the uid.
 
-| | |
-|---|---|
-| `SB_USER` | interactive login, `user:password`. Log in as **`silverbullet`** — the part before the colon |
-| `SB_AUTH_TOKEN` | bearer token for the HTTP API, for anything talking to SilverBullet programmatically |
+`docker run` with the tag spelled out, rather than `docker compose run`, because
+this happens before the playbook has put a compose file on the host — which is
+also why the version is repeated here and has to be bumped alongside
+`compose.yaml`.
 
-Keep both in your password manager. They are the only credentials on the
-instance and nothing in git can regenerate them.
+Keep the password in your password manager. It is the only credential that
+cannot be regenerated from this repo. For programmatic access, issue a token
+per account from the dashboard under the account menu — they are revoked
+individually, without restarting the server.
 
 ## Reaching it
 
@@ -91,134 +145,173 @@ The SSH tunnel above keeps working; a proxy on the same host does too.
 
 ## The uid is pinned, and that matters
 
-The image is a single static binary. It ships no non-root user and does no
-PUID/PGID remapping in its entrypoint, so the uid is set in the compose file
-(`user: "2000:2000"`) and the space has to be owned to match.
+Since 2.11 the entrypoint does remap PUID/PGID — but only when it starts as
+root, and it does not here: the uid is set in the compose file
+(`user: "2000:2000"`), so the binary execs directly and the space has to be
+owned to match.
 
-The playbook creates `/srv/space` owned by 2000 **before** compose runs, which
-is the whole reason that step exists. Left to Docker, a missing bind-mount
-source is created as `root:root` — SilverBullet then starts, passes its
-healthcheck, and cannot write a byte. That failure looks like a working
-instance right up until the first save.
+The playbook creates `/srv/silverbullet` and the space folder under it owned by
+2000 **before** compose runs, which is the whole reason that step exists. Left
+to Docker, a missing bind-mount source is created as `root:root` — SilverBullet
+then starts, passes its healthcheck, and cannot write a byte. That failure looks
+like a working instance right up until the first save.
 
-`/srv/space` rather than `/srv/silverbullet` as the repo convention would
-suggest: "space" is SilverBullet's own term for its data directory.
+`/srv/silverbullet` rather than `/srv/space`, which is the name this would have
+had under single-space mode — there "space" was SilverBullet's own word for its
+data directory. In multi-space the data directory is the *server root* and a
+space is a subfolder of it, so the stack sits on this repo's ordinary
+`/srv/<stack>` convention and `spaces/notes` says what it is.
 
-## Archiving the space
+## Why multi-space, with one space
 
-```sh
-ansible-playbook playbooks/silverbullet-git.yml
-```
+SilverBullet still offers a single-space mode: point `SB_FOLDER` at a directory
+of markdown, set `SB_USER`, done. It is genuinely simpler than what is set up
+here, and for one person with one space it is all you need.
 
-A separate playbook from the deploy, because it needs things the container does
-not: a repo at the forge and a deploy key on the host. A routine redeploy of
-SilverBullet should never block on GitHub being reachable.
+It is also deprecated. 2.11 labelled every `SB_*` variable that configures a
+space as legacy, moved revision configuration, git sync and OIDC to
+multi-space only, and upstream expects to delete single-space entirely at 3.0.
+Starting a new instance on it means scheduling a migration you have not done
+yet.
 
-It installs `silverbullet-git.timer`, which every six hours commits whatever
-changed under `/srv/space` and pushes it. The space is a flat tree of markdown,
-so git is the natural archive for it: every edit becomes a diff and a year of
-history costs less than one of the photos already in there. See
-[Archiving a data directory to git](../../README.md#archiving-a-data-directory-to-git)
-for what the role does and does not promise — the short version is per-edit
-history and an offsite copy, not a replacement for restic.
+So this runs the multi-space server with exactly one space in it. The cost is
+a dashboard to click through once at setup and a directory of server state
+next to the notes. What it buys, beyond not being deprecated:
 
-`space.gitignore` in this directory is deployed to `/srv/space/.gitignore`. The
-line that matters is `.silverbullet.auth.json`: it sits in the space root, holds
-live session state, and is named in `git_archive_secrets` as well, so the timer
-hard-stops rather than trusting the ignore file worked.
+- **Credentials sit outside the pushed tree.** In single-space mode the session
+  secret lives in the space folder — the directory git sync pushes — safe only
+  for as long as a gitignore entry holds. Here accounts, session state and the
+  sync deploy key are all in the server root, which SilverBullet never commits.
+- **API access is per-account.** Tokens are issued and revoked individually
+  from the dashboard, rather than one shared bearer token in an `.env` that
+  can only be rotated by restarting the server.
+- **A second space costs nothing.** If one ever makes sense — something shared
+  read-only, something scratch — it is a form, not a second container.
 
-### One-time setup
+The space is bound to `/`, so none of this is visible from the browser: the
+notes are still at `http://<host>:8002/`.
 
-1. **A private repo.** Private, not internal or public — the archive is a
-   verbatim copy of your notes. Put its SSH URL in
-   `inventory/group_vars/all.yml` as `silverbullet_git_remote`.
+## Revisions and git sync
 
-2. **A deploy key on the host.** Scoped to that one repo; a token would give
-   the homelab write access to every repo on the account.
+SilverBullet keeps the git history itself, per space, in one of three modes:
 
-   ```sh
-   sudo install -d -o root -g root -m 0755 /etc/silverbullet
-   sudo ssh-keygen -t ed25519 -N '' -C 'silverbullet-archive' \
-       -f /etc/silverbullet/deploy_key
-   sudo cat /etc/silverbullet/deploy_key.pub
-   ```
+| | |
+|---|---|
+| `managed` | creates a repo in the space folder if absent, and commits for you |
+| `unmanaged` | reads the history of a repo already there, and **never** commits |
+| `disabled` | no history read or written, `Revision: *` commands hidden |
 
-   Add that public key to the repo under **Settings → Deploy keys**, with
-   **Allow write access** checked. The playbook chowns the private half to
-   appuser and enforces `0600` itself.
+This space is **managed**, which is what `silverbullet setup` sets and what
+this stack wants. Commits land about 30 seconds after typing stops, and at
+least every five minutes during a long session — **Commit frequency** in the
+space settings trades that against commit count. Each one is attributed to the
+account that made the change, so `git log` names a person rather than a cron
+job.
 
-Then run the playbook. It initialises `/srv/space` as a repo, installs the
-units, and runs the archive once so you find out immediately whether the key
-was registered — rather than six hours later, in a journal.
+**Revision: Page History** and **Revision: Space History** read it back from
+inside the editor, with a colour-coded diff per revision and a **Restore** that
+lands as a single undo step. Uncommitted changes head both views.
 
-Nothing else is needed: the first commit and push happen inside that first run,
-through the same script that will run four times a day forever after.
+Letting the application own its own history is the whole reason this is not a
+systemd timer running `git commit` on a schedule: per-edit granularity instead
+of a few commits a day, authorship that names a person, and a conflict UI when
+a push and a local edit disagree. What it costs is that the remote is
+configured in the dashboard rather than in this repo — the one piece of this
+deployment Ansible does not describe.
 
-### Restoring
+### Connecting the remote
 
-The whole point of a plain markdown space is that restore is a clone:
+A private repo, empty, at the forge. Then in the space settings, **Connect
+repository**:
 
-```sh
-sudo git clone git@github.com:<you>/silverbullet-space.git /srv/space
-sudo chown -R 2000:2000 /srv/space
-ansible-playbook playbooks/silverbullet.yml
-ansible-playbook playbooks/silverbullet-git.yml
-```
+1. Paste the repository URL. A web address is converted to its clone address,
+   and the effective one is shown before testing.
+2. Choose **Deploy key for this space**. SilverBullet generates the key and
+   stores it in `/srv/silverbullet/git-keys/<space-id>` — inside the server
+   root, above anything it commits.
+3. Copy the public half and install it at the forge with **write access**. It
+   has to be there before the check can pass.
+4. **Check connection**, then review the destination, branch and frequency, and
+   **Enable sync**.
 
-For a single page as of some point in time:
+Private, not internal or public: the repository is a verbatim copy of your
+notes. A deploy key rather than a token because it is scoped to one repo, where
+a token would hand the homelab write access to every repo on the account.
 
-```sh
-git -C /srv/space log --oneline -- 'Journal/2026-08-06.md'
-git -C /srv/space show <sha>:'Journal/2026-08-06.md'
-```
+The repo must be **empty** at first connection. Pushing a fresh space into one
+that already carries unrelated history needs a one-time choice about combining
+them, which is a decision to make deliberately rather than discover.
 
-Writing a recovered file straight back into the space works, but the browser
-keeps its own client-side index under v2 and will keep showing the old content
-until it resyncs — reload the page, and run "Space: Reindex" if it persists.
-
-That client-side index is also why this is one-way. SilverBullet does not watch
-the space directory for changes made underneath it, so commits pulled down from
-GitHub would be invisible until a manual reindex. Edit in SilverBullet, read
-history on GitHub.
+This is a **backup mechanism, not collaboration** — upstream is explicit about
+that, and it is also not a replacement for restic: binary attachments live in
+this tree too and git stores them badly. It buys per-edit history for text and
+an offsite copy.
 
 ### Checking on it
 
+**Git: View status** and **Git: Sync now** from the command palette; Space
+History shows sync state as well. Pulled changes reach open editors through the
+normal file-change mechanism, and conflicts surface in **Git: Review
+conflicts** — for markdown, with a keep-this / keep-that / edit-manually
+choice per file.
+
+Unknown or unavailable status is not the same as up to date. Network failures
+retry with backoff; an authentication or configuration problem needs the
+connection repaired rather than waiting.
+
+If the key stops working, sync stops rather than falling back to the server's
+own SSH identities — deliberate, so a deleted key fails loudly instead of
+quietly pushing as somebody else.
+
+### Restoring
+
+The whole point of a plain markdown space is that restore is a clone. The notes
+come back from the forge; the server configuration does not, because it holds
+credentials and is not pushed. So a bare-metal restore is a clone plus the
+[Setup](#setup) steps:
+
 ```sh
-systemctl list-timers silverbullet-git.timer
-journalctl -u silverbullet-git.service -n 50
-sudo systemctl start silverbullet-git.service   # force a pass now
+sudo install -d -o 2000 -g 2000 -m 0750 /srv/silverbullet /srv/silverbullet/spaces
+sudo git clone git@github.com:<you>/<repo>.git /srv/silverbullet/spaces/notes
+sudo chown -R 2000:2000 /srv/silverbullet/spaces/notes
 ```
 
-If a push fails with `ERROR: Repository not found.`, ask the key which repo it
-is actually bound to — a deploy key sees exactly one repository and reports
-every other one, including ones your account can see, as nonexistent:
+Then run [Setup](#setup) as written, minus the `rm -rf` — `silverbullet setup`
+with the same `--space-folder spaces/notes`, deploy, reconnect the remote. The
+clone is already there and already a repository, so the space comes back
+populated with its history intact and `setup` leaves it alone: the index page
+is only seeded into a space with no markdown in it.
+
+Reconnecting means a new deploy key, because the old one was in
+`/srv/silverbullet/git-keys/` and went down with the server root. Register the
+new public half and delete the old key at the forge.
+
+Losing `users.json` costs one password reset and a few minutes of clicking.
+That is the deliberate trade for keeping the admin's password hash out of a git
+repository — and the notes, the part that cannot be recreated, are the part
+that is backed up.
+
+For a single page as of some point in time, from the editor: **Revision: Page
+History**, pick a revision, **Restore**. From a shell:
 
 ```sh
-sudo -u appuser ssh -i /etc/silverbullet/deploy_key -o IdentitiesOnly=yes \
-    -o UserKnownHostsFile=/etc/silverbullet/known_hosts \
-    -o StrictHostKeyChecking=yes -T git@github.com
+cd /srv/silverbullet/spaces/notes
+git log --oneline -- 'Journal/2026-08-06.md'
+git show <sha>:'Journal/2026-08-06.md'
 ```
 
-GitHub answers `Hi <owner>/<repo>! You've successfully authenticated`, naming
-the repo. If that is not `silverbullet_git_remote`, the remote is wrong (this
-caught a `silverbullet-space` / `SilverBullet_space` mismatch once). Exit status
-1 is expected — GitHub does not offer shell access.
-
-Note the options go on `ssh` itself. Putting them in `GIT_SSH_COMMAND` and then
-running `ssh -T` tests nothing: only `git` reads that variable, so the bare
-`ssh` runs with no key and no pinned host key and fails on host key
-verification, which looks like a much worse problem than it is.
-
-`Permission denied (publickey)` instead means the public half was never
-registered; `remote: Write access to repository not granted` means it was
-registered without **Allow write access** ticked.
+Writing a recovered file straight back into the space works and shows up in the
+editor within moments: SilverBullet watches the space folder and pushes changes
+made underneath it to open clients (`SB_FS_WATCH`, `auto` by default). A change
+it detected but did not make is attributed to **External** in the history. If
+one ever does not appear, "Space: Reindex" forces the issue.
 
 ## Verifying
 
 ```sh
 sudo docker compose -f /opt/silverbullet/compose.yaml ps      # wait for (healthy)
-sudo docker compose -f /opt/silverbullet/compose.yaml logs -f # "boot mode: single-space"
-ls -la /srv/space                                             # owned by 2000
+sudo docker compose -f /opt/silverbullet/compose.yaml logs -f # "boot mode: multi-space"
+ls -la /srv/silverbullet /srv/silverbullet/spaces/notes       # owned by 2000
 ```
 
 The healthcheck is the image's own and curls `http://localhost:$SB_PORT/.instance`,

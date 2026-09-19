@@ -1,16 +1,26 @@
 services:
   silverbullet:
-    # 2.10.0 is sha256:27b5724cc36798e7de82180ec9898ea9c157c4f15127f279834bca2897b91f37
-
-    image: zefhemel/silverbullet:2.10.0
+    # 2.11.0-slim is sha256:84ce313ad1c53183f1270791fcec7fc45eb1094dd35225a640809c1620e909df
+    #
+    # -slim, not the bare 2.11.0 tag: since 2.11 the default images bundle
+    # Chromium for the Runtime API and weigh 302MB against slim's 44MB. Nothing
+    # here drives a headless browser, so that is 260MB of attack surface for a
+    # feature the stack never calls.
+    image: zefhemel/silverbullet:2.11.0-slim
     container_name: silverbullet
     restart: unless-stopped
-    # The image ships no non-root user and does no PUID/PGID juggling in its
-    # entrypoint - it is a single static binary - so the uid is set here.
-    # 2000:2000 is appuser, which also owns /srv/space, so the notes have
-    # exactly one owner end to end.
+    # Since 2.11 the entrypoint does infer PUID/PGID from the data folder's
+    # owner - but only when it starts as root, which it never does here.
+    # Pinning the uid short-circuits that: the binary execs straight as
+    # 2000:2000, which is appuser, which also owns /srv/silverbullet, so the
+    # notes have exactly one owner end to end.
     user: "2000:2000"
     environment:
+      # No SB_USER or SB_AUTH_TOKEN here, and no .env behind them: both belong
+      # to the deprecated single-space mode, and the server hard-errors at boot
+      # when either is set next to a spaces.json. Accounts live in users.json
+      # and API tokens are per-account, issued from the dashboard.
+
       # Set explicitly rather than relying on the image default: the image's
       # own healthcheck curls "http://localhost:$SB_PORT/.instance", so an
       # unset SB_PORT silently turns the health status into a lie.
@@ -18,19 +28,22 @@ services:
       # SB_HOSTNAME is deliberately absent: the image already sets it to 0.0.0.0
       # in its own ENV, so repeating it here only invites someone to "fix" it to
       # 127.0.0.1 and break the port mapping.
-      SB_FOLDER: /space
-      SB_USER: ${SB_USER:?set SB_USER in .env as user:password}
-      # Bearer token for the HTTP API. Required rather than defaulted to empty,
-      # for the same reason SB_USER is: an empty credential is ambiguous -- it
-      # might disable token auth or it might accept an empty token, and guessing
-      # wrong on a value that gates API access is not worth the convenience.
-      SB_AUTH_TOKEN: ${SB_AUTH_TOKEN:?set SB_AUTH_TOKEN in .env}
+
+      # The multi-space *server root*, not a space: it holds users.json,
+      # spaces.json and the session secret, and the notes sit one level down in
+      # spaces/notes. /data is 2.11's mount point; the legacy /space still
+      # works through a fallback but warns, and 3.0 drops it.
+      SB_FOLDER: /data
     ports:
       # Published on 8002 to leave 3000 free; the container still listens on
       # 3000 internally, which is what SB_PORT above has to agree with.
       - '8002:3000'
     volumes:
-      - /srv/space:/space
+      # One mount, the whole server root. The notes are the subdirectory
+      # spaces/notes, which is the only part SilverBullet's git sync commits --
+      # keeping users.json, the session secret and the sync deploy key above it
+      # and out of the repository.
+      - /srv/silverbullet:/data
     # Nothing here needs elevated privileges: the space is a plain bind mount
     # and 3000 is above the privileged range, so it binds fine without them.
     cap_drop:

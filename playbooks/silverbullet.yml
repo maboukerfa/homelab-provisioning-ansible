@@ -1,23 +1,58 @@
 ---
 # Deploys stacks/silverbullet/compose.yaml to /opt/silverbullet and brings it up.
 #
-# Runs as appuser (2000:2000) with its space at /srv/space, which the role
-# creates and chowns before starting anything. Getting there before Docker does
-# is the point: Docker creates a missing bind-mount source as root:root, and
-# with a pinned `user:` SilverBullet would then come up healthy, blank, and
-# unable to save a single note.
+# Runs as appuser (2000:2000) against the multi-space server root at
+# /srv/silverbullet, which the role creates and chowns before starting anything.
+# Getting there before Docker does is the point: Docker creates a missing
+# bind-mount source as root:root, and with a pinned `user:` SilverBullet would
+# then come up healthy, blank, and unable to save a single note.
 #
-# One manual step, once: /opt/silverbullet/.env has to hold SB_USER, or the run
-# stops at the preflight check. See stacks/silverbullet/README.md.
+# One manual step, once: the admin account, created with the `silverbullet
+# setup` subcommand. A server root with no users.json boots into the setup
+# wizard instead -- an unauthenticated "create the first administrator" form on
+# 8002, where whoever loads it first owns the server. The pre_task below
+# refuses to deploy until the account exists, which is why it is an assert and
+# not a comment. See stacks/silverbullet/README.md.
 
 - name: Deploy SilverBullet
   hosts: homelab
   become: true
+
+  pre_tasks:
+    - name: Check the admin account exists
+      ansible.builtin.stat:
+        path: /srv/silverbullet/users.json
+      register: silverbullet_users_stat
+      tags: [silverbullet]
+
+    - name: Assert the admin account exists
+      ansible.builtin.assert:
+        that:
+          - silverbullet_users_stat.stat.exists
+        fail_msg: >-
+          /srv/silverbullet/users.json is missing, so this server would boot
+          into the setup wizard and hand its first admin account to whoever
+          reaches port 8002 first. Create the account with the `silverbullet
+          setup` command in stacks/silverbullet/README.md, then deploy.
+        quiet: true
+      tags: [silverbullet]
 
   roles:
     - role: stack
       tags: [silverbullet]
       vars:
         stack_name: silverbullet
+
+        # No .env. Multi-space keeps its credentials in users.json, so nothing
+        # in compose.yaml interpolates any more and there is no file for the
+        # role to check for.
+        stack_require_env_file: false
+
+        # The server root and the one space under it. `silverbullet setup`
+        # creates both already; they are listed anyway because the role chowns
+        # each directory it is given but not their parents, so this is what
+        # repairs ownership drift rather than what establishes it.
         stack_data_dirs:
-          - /srv/space
+          - /srv/silverbullet
+          - /srv/silverbullet/spaces
+          - /srv/silverbullet/spaces/notes
