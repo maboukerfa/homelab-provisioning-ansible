@@ -14,7 +14,7 @@ in Postgres, machine learning for search and faces. Deployed with
 | Served at | `https://immich.bat-kochab.ts.net` via `tailscale serve` |
 | Runs as | **root**, unlike every other stack here — see [Running as root](#running-as-root) |
 | Secrets | `/opt/immich/.env` — one key, see `.env.example` |
-| Version | **v3.0.3**, pinned — see [Upgrading](#upgrading) |
+| Version | **v3.2.2**, pinned — see [Upgrading](#upgrading) |
 | Backups | restic timer + Immich's own nightly dump — see [Backups](#backups) |
 
 Four containers: the server, a machine-learning container that does CLIP
@@ -56,19 +56,28 @@ and at **v3.2.2** by September. Nothing here had decided to upgrade; the next
 `docker compose pull` for any reason would have done it, and Immich runs its
 schema migrations on start and does not run them backwards.
 
-So: `v3.0.3` on both immich images, the exact bits already running, and an
-upgrade is now a line in a diff.
+So the adoption pinned `v3.0.3`, the bits already running, and the move to
+`v3.2.2` was the next commit — taken deliberately, after reading the notes,
+rather than collected as a side effect. That is the whole difference.
 
 ```sh
 # 1. Read what changed. Immich calls out required migrations and breaking
 #    changes in the release notes, and skipping majors is not supported.
 #    https://github.com/immich-app/immich/releases
-# 2. Bump BOTH immich tags in compose.yaml. They share an API contract -- a
+# 2. Take a dump. Immich's own nightly one can be 24h old, and rolling back an
+#    upgrade is a restore, not a tag revert.
+ssh homelab 'sudo sh -c "docker exec immich_postgres pg_dumpall --clean \
+  --if-exists --username=postgres | gzip > \
+  /srv/immich-images/images/backups/pre-upgrade-$(date +%F).sql.gz"'
+# 3. Bump BOTH immich tags in compose.yaml. They share an API contract -- a
 #    mismatched pair shows up as search and face detection quietly failing.
-# 3. Deploy, and watch it migrate.
+# 4. Deploy, and watch it migrate.
 make stack NAME=immich
 ssh homelab 'docker logs -f immich_server'
 ```
+
+Name that dump anything except `immich-db-backup-*.sql.gz`: Immich prunes its
+own backups by that pattern and would eventually delete yours.
 
 The Postgres image is pinned by digest and its tag names three things that are
 on-disk format — the major, `vectorchord0.4.3` and `pgvectors0.2.0`. Changing

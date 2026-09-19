@@ -8,8 +8,8 @@
 # ${IMMICH_VERSION} from .env, which was `v3`, a tag that pointed at v3.0.3
 # when it was pulled and points at v3.2.2 today. One `docker compose pull` and
 # a household photo archive takes an upgrade and its schema migrations by
-# accident. stacks/immich/compose.yaml pins v3.0.3, the version already
-# running, so this deploy changes the tag and not the bits behind it.
+# accident. stacks/immich/compose.yaml pins an exact version instead, so an
+# upgrade is a line in a diff and a deploy is not one.
 #
 # The containers keep running as root and the data stays exactly where it is.
 # Moving Immich to appuser (2000:2000) like every other stack here means a

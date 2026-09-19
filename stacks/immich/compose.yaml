@@ -7,20 +7,19 @@
 
 services:
   immich-server:
-    # v3.0.3 is
-    # sha256:c716dc20f957aafd89fa9d284a2ec63e25c9e2d8d8e87c6197d540a3dce237db
-    # -- the exact bits this host is already running.
+    # v3.2.2 is
+    # sha256:79cc1623323d5894922686d8743b4780181428f98eecbfb58ce12c41ef02d1ea
     #
     # Upstream reads the tag from ${IMMICH_VERSION} in .env, which on this host
-    # was `v3`. That tag moves: it pointed at v3.0.3 when it was pulled and
-    # points at v3.2.2 today, so the next `docker compose pull` here was two
-    # minor versions and a batch of schema migrations nobody asked for.
+    # was `v3`. That tag moves: it pointed at v3.0.3 when it was pulled in July
+    # and at v3.2.2 by September, so any `docker compose pull` in between was
+    # two minor versions and a batch of schema migrations nobody asked for.
     # Immich migrates the database on start and does not migrate back.
     #
-    # Upgrading is now a line in this diff: read the release notes, bump both
+    # Upgrading is a line in this diff: read the release notes, bump both
     # immich tags together, deploy. Server and machine-learning must move as
     # one -- they share an API contract, not just a version number.
-    image: ghcr.io/immich-app/immich-server:v3.0.3
+    image: ghcr.io/immich-app/immich-server:v3.2.2
     container_name: immich_server
     # `always`, like the rest of this file and unlike every other stack here.
     # Adoption fidelity: the point of this file is to change who deploys
@@ -80,13 +79,13 @@ services:
   immich-machine-learning:
     # Same release as the server, and not optional: the two speak a versioned
     # API and a mismatch shows up as search and face detection quietly failing.
-    # v3.0.3 is
-    # sha256:d76fe88b69282c09a97eac4f82dafa82cfd77bce274bc742591cde974f87dacb
+    # v3.2.2 is
+    # sha256:60dfcf266a9ef3b7376f5678e8c980d4fb61db5fc48c078fe8a326ab1535d60d
     #
-    # For hardware acceleration the tag takes a suffix -- v3.0.3-cuda, -openvino,
+    # For hardware acceleration the tag takes a suffix -- v3.2.2-cuda, -openvino,
     # -armnn, -rocm, -rknn -- plus the hwaccel.ml.yml overlay. This host has no
     # GPU, so it runs CPU inference.
-    image: ghcr.io/immich-app/immich-machine-learning:v3.0.3
+    image: ghcr.io/immich-app/immich-machine-learning:v3.2.2
     container_name: immich_machine_learning
     restart: always
     volumes:
