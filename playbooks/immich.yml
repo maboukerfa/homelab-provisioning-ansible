@@ -11,10 +11,9 @@
 # accident. stacks/immich/compose.yaml pins an exact version instead, so an
 # upgrade is a line in a diff and a deploy is not one.
 #
-# The containers keep running as root and the data stays exactly where it is.
-# Moving Immich to appuser (2000:2000) like every other stack here means a
-# recursive chown of 34G of photos and a Postgres cluster owned by uid 999 --
-# worth doing, and worth doing as its own commit. See stacks/immich/README.md.
+# Adopted as root, the way Immich installs, and moved onto appuser
+# (2000:2000) in a later commit -- a recursive chown of the library, the
+# cluster and the model cache, rehearsed first. See stacks/immich/README.md.
 #
 # No manual step on this host: the database password is carried over from
 # /opt/immich-app/.env below. A restore onto an empty host needs that file
@@ -109,12 +108,11 @@
         stack_name: immich
 
         # Empty, unlike every other stack here, and the asserts above are why.
-        # Both bind sources already exist and hold data: /srv/immich-images/images
-        # is owned by the admin login and /srv/immich/postgres by uid 999, two
-        # owners the role could not express in one list and neither of which is
-        # appuser. Nothing here is protected by creating a directory that is
-        # already there -- what protects this stack is refusing to start when
-        # the mount or the cluster is missing.
+        # Both bind sources already exist, hold data and are appuser-owned, and
+        # the role applies one mode to everything it is handed -- 0755 on the
+        # library and 0700 on the cluster is not one mode. Nothing is protected
+        # by creating a directory that is already there; what protects this
+        # stack is refusing to start when the mount or the cluster is missing.
         stack_data_dirs: []
 
   post_tasks:

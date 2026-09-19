@@ -21,6 +21,16 @@ services:
     # one -- they share an API contract, not just a version number.
     image: ghcr.io/immich-app/immich-server:v3.2.2
     container_name: immich_server
+    # appuser, the identity every container in this homelab runs as. Immich
+    # installs as root by default and this host did for its first two months;
+    # /srv/immich-images/images and /srv/immich/postgres were chowned to 2000
+    # in the same commit that added these lines.
+    #
+    # Unusually cheap to set here: start.sh sets LD_PRELOAD, reads the optional
+    # *_FILE secrets and execs node. Nothing in it chowns, binds a privileged
+    # port or needs to start as root, so overriding the uid changes who writes
+    # the bind mount and nothing else.
+    user: "2000:2000"
     # `always`, like the rest of this file and unlike every other stack here.
     # Adoption fidelity: the point of this file is to change who deploys
     # Immich, not how it runs. Switch the four to `unless-stopped` in one
@@ -69,12 +79,14 @@ services:
       # `disable: false` keeps the image's own healthcheck (immich-healthcheck)
       # rather than replacing it. Upstream's line, kept.
       disable: false
-    # No cap_drop, unlike every other stack in this repo. This container runs
-    # as root -- Immich's supported configuration -- over a bind mount whose
-    # directories belong to three different uids, so it is DAC_OVERRIDE that
-    # lets it write there at all. Dropping capabilities under a root uid is
-    # theatre; the real fix is running as appuser, which is a migration and a
-    # separate commit. See the README.
+    # Meaningful only now that the uid is pinned. While this ran as root it was
+    # DAC_OVERRIDE that let it write a bind mount owned by somebody else, so
+    # dropping capabilities would have been decoration. As 2000 it writes files
+    # it owns, and 2283 is above the privileged range.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   immich-machine-learning:
     # Same release as the server, and not optional: the two speak a versioned
@@ -87,6 +99,11 @@ services:
     # GPU, so it runs CPU inference.
     image: ghcr.io/immich-app/immich-machine-learning:v3.2.2
     container_name: immich_machine_learning
+    # appuser. The only thing this writes is the model cache, and every path it
+    # caches to -- MACHINE_LEARNING_CACHE_FOLDER, TRANSFORMERS_CACHE, HF_HOME --
+    # is already under /cache in the image, so the volume below is the whole
+    # surface. HOME is /root and stays unwritable; nothing has asked for it.
+    user: "2000:2000"
     restart: always
     volumes:
       # A named volume, not a bind mount under /srv, and on purpose: these are
@@ -95,6 +112,10 @@ services:
       - model-cache:/cache
     healthcheck:
       disable: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # No environment block at all. Every MACHINE_LEARNING_* knob is defaulted,
     # and the only thing upstream's `env_file: .env` actually delivered here
     # was the database password.
@@ -107,6 +128,12 @@ services:
     # Immich uses it for the job queue, and an empty queue after a restart means
     # pending thumbnail and ML jobs are re-derived from the database rather than
     # lost -- which is why this one gets no volume and no backup.
+    #
+    # The one service here with no `user:` line. Its entrypoint starts as root
+    # and gosu's down to the image's own uid 999, so it is already unprivileged
+    # where it counts, and it writes nothing outside the container -- which is
+    # the only thing a pinned uid would be protecting. Forcing 2000 would skip
+    # the gosu and leave valkey on a /data it does not own.
     container_name: immich_redis
     image: docker.io/valkey/valkey:9@sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf
     healthcheck:
@@ -125,6 +152,16 @@ services:
     # notes, which tell you when one is required.
     container_name: immich_postgres
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    # appuser, for the reasons written up in stacks/litellm/README.md: the
+    # image's own uid is 999, which on this Debian host already belongs to
+    # `caddy`, so `ls -l` on the data directory named the wrong owner.
+    #
+    # This image is Debian, not alpine, and the entrypoint only fabricates a
+    # passwd entry with libnss_wrapper around initdb -- so "does postgres start
+    # as an unknown uid" was worth rehearsing rather than assuming. It does: a
+    # throwaway cluster initdb'd and reached "ready to accept connections" as
+    # 2000:2000 before this line was written.
+    user: "2000:2000"
     environment:
       # Upstream reads these three from .env. Only the password is a secret, so
       # only the password stays there; the other two are configuration and
@@ -143,6 +180,12 @@ services:
     restart: always
     healthcheck:
       disable: false
+    # Safe now that the uid is pinned: the entrypoint never has to chown the
+    # data directory or setuid away from root, and 5432 is unprivileged.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   model-cache:

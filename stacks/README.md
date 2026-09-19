@@ -57,6 +57,8 @@ Whichever you use, `/srv/<name>/` has to be owned by the same ids or the
 container comes up unable to write, which looks like a working service right up
 until the first save.
 
-`immich` is the exception, and an adoption rather than a decision: it runs as
-root, the way it was installed, because moving 34G of photos and a Postgres
-cluster onto appuser is its own commit. See `stacks/immich/README.md`.
+`immich` is the one stack that had to be migrated onto appuser rather than
+starting there — it was adopted from a root install, which is a recursive chown
+and a rehearsal, not an edit. See `stacks/immich/README.md`. Its valkey is
+still the image's own uid 999, because that image drops privileges itself and
+writes nothing outside the container.

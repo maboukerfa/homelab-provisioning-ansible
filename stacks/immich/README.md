@@ -8,11 +8,11 @@ in Postgres, machine learning for search and faces. Deployed with
 |---|---|
 | Host path | `/opt/immich/` (compose file, root-owned) |
 | Library | `/srv/immich-images/images` — 34G on its own 246G LVM volume |
-| Database | `/srv/immich/postgres` — on the root filesystem, uid 999 |
+| Database | `/srv/immich/postgres` — on the root filesystem |
 | Model cache | docker volume `immich_model-cache` — ~2GB, regenerable |
 | Published on | `2283` on every interface — the mobile apps upload to the LAN address |
 | Served at | `https://immich.bat-kochab.ts.net` via `tailscale serve` |
-| Runs as | **root**, unlike every other stack here — see [Running as root](#running-as-root) |
+| Runs as | appuser (2000:2000), except valkey — see [Running as appuser](#running-as-appuser) |
 | Secrets | `/opt/immich/.env` — one key, see `.env.example` |
 | Version | **v3.2.2**, pinned — see [Upgrading](#upgrading) |
 | Backups | restic timer + Immich's own nightly dump — see [Backups](#backups) |
@@ -107,31 +107,66 @@ asserts `PG_VERSION` is there.
 Neither check costs anything and neither would have been caught downstream: in
 both cases every container comes up healthy and the API answers.
 
-## Running as root
+## Running as appuser
 
-Every other stack in this repo runs as appuser (2000:2000). This one runs as
-root, which is Immich's supported configuration and what this host has been
-doing for months, and it stays that way on purpose: changing it is a migration,
-not a deploy.
+Immich installs as root, and this host ran it that way for its first two
+months. It no longer does: the server, the machine-learning container and
+Postgres all run as **2000:2000**, the same identity as every other stack here.
+A container with the whole photo library bind-mounted is the one on this host
+where root mattered most.
 
-What it would take, when you want it — as its own commit, with the stack down:
+The migration, for the record and for a rebuild:
 
 ```sh
-# the library, 34G, and the ~2GB model cache
-chown -R 2000:2000 /srv/immich-images/images
-# the cluster, currently uid 999 -- which on this host is `caddy`, so ls lies
-# about who owns it
-chown -R 2000:2000 /srv/immich/postgres
+docker compose -p immich stop
+chown -R 2000:2000 /srv/immich-images/images                        # 35,780 files
+chown -R 2000:2000 /srv/immich/postgres                             # 1,809
+chown -R 2000:2000 /var/lib/docker/volumes/immich_model-cache/_data # 80
+# then `user: "2000:2000"` on the three services and deploy
 ```
 
-plus `user: "2000:2000"` on the server, the machine-learning container and the
-database, and `cap_drop: [ALL]` becoming meaningful at the same time. It is not
-meaningful now: the server writes into a bind mount whose directories belong to
-three different uids, and it is `DAC_OVERRIDE` under a root uid that lets it.
-Dropping capabilities while staying root would be decoration.
+It took under a second — 35k inodes on ext4 is nothing, whatever the 34G
+suggests.
 
-Worth doing. A container with the whole photo library bind-mounted is the one
-on this host where root matters most.
+**Two things were checked first rather than assumed.** Postgres is the one that
+could have bitten: this is a Debian image, and its entrypoint only fabricates a
+passwd entry (with `libnss_wrapper`) around `initdb`, so an unknown uid starting
+an *existing* cluster is a different code path. Rehearsed on a throwaway cluster
+in `/tmp` before anything was touched — `database system is ready to accept
+connections` as 2000:2000. And `start.sh` in the server image sets `LD_PRELOAD`,
+reads the optional `*_FILE` secrets and execs node: no chown, no privileged
+port, nothing that needs to begin as root.
+
+`cap_drop: [ALL]` and `no-new-privileges` came with the same commit. They are
+worth something only now — while this ran as root it was `DAC_OVERRIDE` that
+let it write a bind mount owned by somebody else, so dropping capabilities
+would have been decoration.
+
+**valkey is the exception and keeps its own uid.** Its entrypoint starts as
+root and `gosu`'s down to the image's 999, so it is already unprivileged where
+it counts, and it writes nothing outside the container. Forcing 2000 would skip
+the gosu and leave it on a `/data` it does not own.
+
+**Rolling back does not need another chown.** Root ignores file ownership, so
+dropping the three `user:` lines is enough on its own; the data can stay
+appuser-owned either way.
+
+### What proved it worked
+
+Immich rewrote its own `.immich` marker files as appuser on the first start,
+and logged the check itself:
+
+```
+StorageService  Verifying system mount folder checks, current state:
+  {"mountChecks":{"thumbs":true,"upload":true,"backups":true,
+                  "library":true,"profile":true,"encoded-video":true}}
+StorageService  Successfully verified system mount folder checks
+
+-rw-r--r-- 1 appuser appuser 13 /srv/immich-images/images/library/.immich
+```
+
+That is the check worth repeating after any change here, because it is the one
+that distinguishes "healthy" from "can actually write".
 
 ## Data layout
 
