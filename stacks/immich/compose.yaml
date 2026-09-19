@@ -100,14 +100,21 @@ services:
     # was the database password.
 
   redis:
-    # Pinned by digest upstream, kept exactly as pulled. Immich uses it for the
-    # job queue, and an empty queue after a restart means pending thumbnail and
-    # ML jobs are re-derived from the database rather than lost -- which is why
-    # this one gets no volume and no backup.
+    # Upstream's digest for v3.2.2, not whatever `valkey:9` resolves to today --
+    # this is valkey 9.1.1, the build Immich is tested against, and the tag has
+    # already moved past it.
+    #
+    # Immich uses it for the job queue, and an empty queue after a restart means
+    # pending thumbnail and ML jobs are re-derived from the database rather than
+    # lost -- which is why this one gets no volume and no backup.
     container_name: immich_redis
-    image: docker.io/valkey/valkey:9@sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
+    image: docker.io/valkey/valkey:9@sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf
     healthcheck:
-      test: redis-cli ping || exit 1
+      # Not a bare `redis-cli ping`: redis-cli exits 0 on an error reply, so the
+      # bare form reports healthy for any answer at all. Verified on this host --
+      # `redis-cli notacommand` prints ERR and exits 0. Upstream tightened this
+      # in v3.2.2 and it is worth carrying over.
+      test: redis-cli ping | grep -q PONG || exit 1
     restart: always
 
   database:
