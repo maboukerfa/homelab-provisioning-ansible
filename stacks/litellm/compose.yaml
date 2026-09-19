@@ -12,9 +12,10 @@ services:
     container_name: litellm
     restart: unless-stopped
     # No `user:` line, unlike every other container in this repo: the image
-    # ends on USER root and this service mounts nothing from the host, so a
-    # pinned uid would buy none of what it buys for a stack that owns files on
-    # /srv. What is left is capped by cap_drop and no-new-privileges below.
+    # ends on USER root and the only thing it mounts is the read-only config
+    # below, so a pinned uid would buy none of what it buys for a stack that
+    # owns files on /srv. What is left is capped by cap_drop and
+    # no-new-privileges below.
     # Running it as 2000 may well work -- the image goes out of its way to keep
     # the prisma engines readable by any uid -- but that is untested here, and
     # an untested uid on a container that migrates a database is not a guess
@@ -44,6 +45,13 @@ services:
       # healthcheck, and is running against a half-migrated schema. A crash
       # loop is louder and easier to debug than silently wrong spend logs.
       ENFORCE_PRISMA_MIGRATION_CHECK: "True"
+      # Loaded on top of the DB-stored models, not instead of them: models stay
+      # the source of truth in Postgres, this file carries only the global
+      # litellm_settings the UI has no field for. drop_params is the one that
+      # earns it -- without it the gateway 400s any request that carries a param
+      # the backend rejects (the vLLM models here have no reasoning_effort)
+      # instead of dropping the param and serving the call.
+      CONFIG_FILE_PATH: /etc/litellm/config.yaml
     ports:
       # Published on 8006 to leave 4000 free; the container still listens on
       # 4000 internally, which is what the healthcheck below has to agree with.
@@ -88,6 +96,15 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # The inline config defined at the bottom of the file, mounted read-only at
+    # the path CONFIG_FILE_PATH points at above.
+    configs:
+      - source: litellm_config
+        target: /etc/litellm/config.yaml
+      # Beside config.yaml on purpose: LiteLLM imports `callbacks` modules
+      # relative to the config file's directory.
+      - source: litellm_callbacks
+        target: /etc/litellm/custom_callbacks.py
 
   db:
     # 16.15 is sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
@@ -145,3 +162,41 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+configs:
+  # Injected inline, not shipped as a file beside this one: the stack role
+  # deploys compose.yaml alone, so a sibling config.yaml would never reach the
+  # host. Inline content rides inside the one file that does. Needs a Compose
+  # new enough for the `content` attribute (v2.23+).
+  litellm_config:
+    content: |
+      litellm_settings:
+        drop_params: true
+        callbacks: custom_callbacks.proxy_handler_instance
+
+  # Albert's vLLM only parses tool calls when the request sets tool_choice.
+  # Claude Code and most harnesses omit it (the OpenAI spec defaults to
+  # "auto"), so the model starts a tool call, Albert drops it, and the harness
+  # gets a bare "\n\n". opencode works only because the AI SDK always sends
+  # "auto". This hook fills in that default before the call leaves the gateway.
+  # Keep `$` out of this block: Compose interpolates it.
+  litellm_callbacks:
+    content: |
+      from litellm.integrations.custom_logger import CustomLogger
+
+      ANTHROPIC_CALL_TYPE = "anthropic_messages"
+
+
+      class DefaultToolChoice(CustomLogger):
+          async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+              # Requests without tools (e.g. title generation) must stay untouched
+              if not data.get("tools") or data.get("tool_choice"):
+                  return data
+
+              # Anthropic format uses an object, OpenAI format a string
+              is_anthropic = call_type == ANTHROPIC_CALL_TYPE
+              data["tool_choice"] = {"type": "auto"} if is_anthropic else "auto"
+              return data
+
+
+      proxy_handler_instance = DefaultToolChoice()
