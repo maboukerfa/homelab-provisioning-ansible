@@ -181,15 +181,38 @@ that distinguishes "healthy" from "can actually write".
     backups/          372M   Immich's own nightly pg_dump, 02:00
 
 /srv/immich/
-  postgres/          351M    the live cluster
-  library/ thumbs/ upload/ encoded-video/ profile/ backups/   ~6G, STALE
+  postgres/          468M    the live cluster -- the only thing left here
+
+/srv/immich-orphans/  35M    five files, see below
 ```
 
-That second group is the original upload location, from before the dedicated
-volume existed. Nothing mounts it — the July 26 timestamps are the move. It is
-6G of rot with the same directory names as the live library, which makes it the
-thing somebody restores from by mistake one day. Check it against the live
-library and delete it.
+`/srv/immich` also held the original upload location — `library/`, `thumbs/`,
+`upload/`, `encoded-video/`, `profile/`, `backups/`, about 6G left behind when
+the dedicated volume arrived on July 26. Deleted on 2026-09-19. It was rot with
+the same directory names as the live library, which made it the thing somebody
+restores from by mistake one day.
+
+**It was not quite redundant, which is why `/srv/immich-orphans` exists.** Of
+its 851 library files, 846 were present in the live library. The other five —
+four photos and a video, 35M — were in neither: no matching path, no matching
+content, and no row in `asset` for their SHA-1, active or trashed. Immich has
+no record of them at all. Most likely they are things deleted in the UI after
+the move, where the deletion reached the live copy and could not reach a tree
+nothing was mounting. They were set aside rather than destroyed. Re-upload them
+or delete the directory; nothing refers to it, and restic does not cover it.
+
+The check is worth repeating if this ever comes up again, because a name
+comparison alone gets it wrong:
+
+```sh
+# LC_ALL=C or comm silently mis-reports -- locale collation and comm's byte
+# comparison disagree about ~ ( - and you get phantom differences
+cd /srv/immich/library         && find . -type f -printf '%P\n' | LC_ALL=C sort > /tmp/stale.txt
+cd /srv/immich-images/images/library && find . -type f -printf '%P\n' | LC_ALL=C sort > /tmp/live.txt
+LC_ALL=C comm -23 /tmp/stale.txt /tmp/live.txt
+# then, for each survivor, ask the database rather than the filesystem:
+#   select ... from asset where checksum = decode('<sha1>','hex');
+```
 
 ## Backups
 
