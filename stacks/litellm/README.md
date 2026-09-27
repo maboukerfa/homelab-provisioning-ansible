@@ -13,8 +13,10 @@ keys and per-key spend tracking. Deployed with
 | Backups | `pg_dump`, **not** git — see [Backups](#backups) |
 
 Two containers: the gateway, and a Postgres holding models, virtual keys and
-spend logs. `STORE_MODEL_IN_DB` is on, so there is no `config.yaml` — models
-are added through the UI and the database is the only source of truth.
+spend logs. `STORE_MODEL_IN_DB` is on, so models are normally added through
+the UI and the database is the source of truth — except one OAuth-only model
+in `compose.yaml`'s inline `config.yaml`, which needs no stored provider key
+and so has no UI field to be added through.
 
 ## Setup
 

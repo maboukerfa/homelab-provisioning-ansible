@@ -46,10 +46,11 @@ services:
       # loop is louder and easier to debug than silently wrong spend logs.
       ENFORCE_PRISMA_MIGRATION_CHECK: "True"
       # Loaded on top of the DB-stored models, not instead of them: models stay
-      # the source of truth in Postgres, this file carries only the global
-      # litellm_settings the UI has no field for. drop_params is the one that
-      # earns it -- without it the gateway 400s any request that carries a param
-      # the backend rejects (the vLLM models here have no reasoning_effort)
+      # the source of truth in Postgres, except for the one OAuth-only entry
+      # below that the UI has no field for. Otherwise this file carries only
+      # the global litellm_settings. drop_params is the one that earns it --
+      # without it the gateway 400s any request that carries a param the
+      # backend rejects (the vLLM models here have no reasoning_effort)
       # instead of dropping the param and serving the call.
       CONFIG_FILE_PATH: /etc/litellm/config.yaml
     ports:
@@ -173,6 +174,23 @@ configs:
       litellm_settings:
         drop_params: true
         callbacks: custom_callbacks.proxy_handler_instance
+        # Forwards the client's Authorization header to Anthropic instead of
+        # requiring a stored provider key -- what lets claude-opus-5-5 below
+        # authenticate with a forwarded Claude Max/Pro OAuth token. Scoped to
+        # that one model group; general_settings has a same-named setting that
+        # would do this gateway-wide, which is not wanted here.
+        model_group_settings:
+          forward_client_headers_to_llm_api:
+            - claude-opus-5-5
+
+      # Claude Max/Pro subscription access: authenticates by forwarding the
+      # caller's Anthropic OAuth token instead of a stored provider key. That
+      # needs a model with no api_key, which STORE_MODEL_IN_DB and the UI have
+      # no field for -- the one exception to "models live in Postgres" above.
+      model_list:
+        - model_name: claude-opus-5-5
+          litellm_params:
+            model: anthropic/claude-opus-5-5
 
   # Albert's vLLM only parses tool calls when the request sets tool_choice.
   # Claude Code and most harnesses omit it (the OpenAI spec defaults to
